@@ -280,6 +280,9 @@ if [ -x /usr/bin/qemu-aarch64-static ]; then
     install -m 0755 "$SCRIPTDIR/install-waydroid.sh" "$ROOTMNTP/usr/local/sbin/waydroid-setup" 2>/dev/null || true
     install -m 0755 "$SCRIPTDIR/debug-waydroid.sh" "$ROOTMNTP/usr/local/sbin/debug-waydroid" 2>/dev/null || true
     install -m 0755 "$SCRIPTDIR/install-alpindroid-autostart.sh" "$ROOTMNTP/usr/local/sbin/alpindroid-autostart-setup" 2>/dev/null || true
+    # 把桌面自启服务装进镜像并 enable（--install-only：chroot 里不能真启动合成器）
+    chroot "$ROOTMNTP" /bin/sh /usr/local/sbin/alpindroid-autostart-setup --install-only >/dev/null 2>&1 \
+        || echo "  ⚠ 桌面自启服务安装失败（可在板子上跑 alpindroid-autostart-setup 补装）"
     install -m 0755 "$SCRIPTDIR/start-weston.sh" "$ROOTMNTP/usr/local/sbin/start-weston" 2>/dev/null || true
     install -m 0755 "$SCRIPTDIR/wayland-check.sh" "$ROOTMNTP/usr/local/sbin/wayland-check" 2>/dev/null || true
     install -m 0755 "$SCRIPTDIR/analyse-waydroid.sh" "$ROOTMNTP/usr/local/sbin/analyse-waydroid" 2>/dev/null || true
@@ -518,7 +521,7 @@ chk "彩色终端 profile"                   test -f "$ROOTMNTP/etc/profile.d/al
 chk "字体已安装"                         sh -c "ls -A '$ROOTMNTP/usr/share/fonts' 2>/dev/null | grep -q ."
 chk "fontconfig 规则（monospace/CJK）"   test -f "$ROOTMNTP/etc/fonts/local.conf"
 
-# v0.22：Android 容器（软件包与配置固化，镜像本身首次启动下载）
+# v0.22：Android 容器（镜像内置，无网络即可初始化并启动）
 chk "waydroid 已安装"                    test -x "$ROOTMNTP/usr/bin/waydroid"
 chk "waydroid OpenRC 服务"               test -f "$ROOTMNTP/etc/init.d/waydroid-container"
 chk "lxc 已安装"                         test -x "$ROOTMNTP/usr/bin/lxc-start"
@@ -537,6 +540,14 @@ chk "LXC 已含 dma_heap 挂载"             grep -q 'dev/dma_heap' "$ROOTMNTP/v
 chk "LXC cgroup 为 mixed"                grep -q 'cgroup:mixed' "$ROOTMNTP/var/lib/waydroid/lxc/waydroid/config"
 chk "镜像已扩容到 5G 以上"               sh -c "test \$(stat -c%s '$OUTPUT') -gt 5368709120"
 chk "eglinfo 存在" test -x "$ROOTMNTP/usr/bin/eglinfo"
+# v0.22：桌面自启（kiosk-shell + waydroid 全家桶）
+chk "桌面自启服务已安装"                 test -x "$ROOTMNTP/etc/init.d/alpindroid-desktop"
+chk "桌面自启已在 default runlevel"      test -L "$ROOTMNTP/etc/runlevels/default/alpindroid-desktop"
+chk "alpindroid-weston 包装脚本"         test -x "$ROOTMNTP/usr/local/sbin/alpindroid-weston"
+chk "weston 使用 kiosk-shell"            grep -q 'shell=kiosk' "$ROOTMNTP/usr/local/sbin/alpindroid-weston"
+chk "alpindroid-show-ui 已安装"          test -x "$ROOTMNTP/usr/local/sbin/alpindroid-show-ui"
+chk "waydroid rootfs 目录已建"           test -d "$ROOTMNTP/var/lib/waydroid/rootfs"
+chk "waydroid_base.prop 已生成"          test -f "$ROOTMNTP/var/lib/waydroid/waydroid_base.prop"
 chk "cgroup2 已写入 fstab" grep -q cgroup2 "$ROOTMNTP/etc/fstab"
 
 NKOS=$(find "$ROOTMNTP/lib/modules/$KVER" -name '*.ko' | wc -l)

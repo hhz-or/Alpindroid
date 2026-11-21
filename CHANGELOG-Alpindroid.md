@@ -840,3 +840,53 @@ unmount both partitions, `losetup -d` every loop that references the image, then
 First boot on a freshly flashed card therefore needs no network at all: the
 first-boot hook only grows the partition to the full card, and the images are
 already in place.
+
+### 15.12 Displaying Android: kiosk-shell, not desktop-shell
+
+The first boot of the flashed v0.22 image brought weston up and left Android
+running, yet HDMI stayed on the grey desktop. The container was healthy
+(`Session: RUNNING`, `Container: RUNNING`, `sys.boot_completed=1`) and both
+`com.android.launcher3` and `com.android.systemui` were alive.
+
+What the evidence actually showed:
+
+| observation | meaning |
+|---|---|
+| hwcomposer (pid 234) holds `/dev/dri/renderD128` plus dmabufs named `VRI[QuickstepLauncher]`, `VRI[StatusBar]`, `VRI[NavigationBar0]`, `memfd:Wallpaper` | Android really is composing |
+| hwcomposer fd `socket:[171538]` pairs with weston fd `socket:[171539]` | the wayland connection was never the problem |
+| `waydroid show-full-ui` exits silently and puts nothing on screen | there is no error to chase either |
+
+So the picture existed and the connection existed — the **shell** was wrong.
+Waydroid's `hwcomposer.waydroid.so` creates one full-output surface with no
+desktop-window semantics, and weston's default `desktop-shell` never maps such a
+surface. Starting weston with `--shell=kiosk` fixed it, and the container stops
+being `FROZEN` at the same time, i.e. something finally consumes the UI.
+
+Touch needed no work at all: Android's `/dev/input/` already contains
+`wl_touch_events` and `wl_keyboard_events`, which waydroid feeds from the weston
+seat.
+
+`scripts/install-alpindroid-autostart.sh`
+- starts weston with `--shell=kiosk`;
+- gains `--install-only`, so the image build can install and enable the service
+  inside a chroot without trying to start a compositor;
+- uses `start-stop-daemon --user` (the `--chuid` spelling is deprecated) and
+  installs `/usr/local/sbin/alpindroid-weston` because start-stop-daemon cannot
+  export `XDG_RUNTIME_DIR` / `LIBSEAT_BACKEND`.
+
+`scripts/build-alpindroid.sh` registers 7 extra checks (service present and
+enabled, wrapper present, `shell=kiosk`, show-ui helper, `var/lib/waydroid/rootfs`,
+`waydroid_base.prop`).
+
+### 15.13 firstboot: /dev/root does not exist
+
+`/proc/mounts` reports the root source as `/dev/root` on Alpine, and that path is
+not present in the filesystem. The original hook derived the partition name from
+it, logged `cannot parse partition name root`, and exited after writing its
+"already grown" marker, so the rootfs stayed at 5.7 G on a 117 G card.
+
+It now resolves the real device through `root=PARTUUID=...` from
+`/proc/cmdline` via `/dev/disk/by-partuuid/`, and `resize2fs` targets that
+device. The vendor Debian image solves the same problem with
+`/usr/lib/walnutpi/resize_part` (`findmnt -n -o SOURCE /` + `parted resizepart`),
+which works there because Debian's mount table carries the real device node.

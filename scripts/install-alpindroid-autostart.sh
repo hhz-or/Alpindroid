@@ -2,27 +2,36 @@
 # ============================================================================
 # Alpindroid: enable/disable the desktop autostart (Weston + Waydroid on HDMI)
 #
-# A fresh boot currently leaves a text console on tty0. This installs one OpenRC
-# service that brings the graphics stack up in the right order while keeping SSH
-# usable if anything fails:
+# A fresh boot leaves a text console on tty0. This installs one OpenRC service
+# that brings the graphics stack up in the right order while keeping SSH usable
+# if anything fails:
 #
-#   seatd, dbus -> weston (as the desktop user, via seatd)
+#   seatd, dbus -> weston (kiosk-shell, as the desktop user, via seatd)
 #               -> waydroid container + waydroid0 bridge
 #               -> waydroid session (inside its own dbus-run-session)
-#               -> show-full-ui once Android reports sys.boot_completed=1
+#               -> alpindroid-show-ui: waits for sys.boot_completed=1, then
+#                  runs show-full-ui
+#
+# weston runs with --shell=kiosk on purpose. Waydroid's hwcomposer creates one
+# full-output wayland surface with no desktop-window semantics; under the default
+# desktop-shell it is never mapped and HDMI stays grey. kiosk-shell maps every
+# surface to the whole output, which is what a single full-screen Android wants.
 #
 # Every stage is best-effort: a broken compositor must never take SSH or the
 # network down, and `rc-service alpindroid-desktop stop` returns to text.
 #
 # Usage (as root on the board):
-#   sh install-alpindroid-autostart.sh            install + enable + start
-#   sh install-alpindroid-autostart.sh --disable  disable + stop
-#   sh install-alpindroid-autostart.sh --status   report
+#   sh install-alpindroid-autostart.sh                 install + enable + start
+#   sh install-alpindroid-autostart.sh --install-only  install + enable, no start
+#   sh install-alpindroid-autostart.sh --disable       disable + stop
+#   sh install-alpindroid-autostart.sh --status        report
 # ============================================================================
 set -u
 
 DESKTOP_USER="${DESKTOP_USER:-alpine}"
 SERVICE=/etc/init.d/alpindroid-desktop
+WESTON_WRAPPER=/usr/local/sbin/alpindroid-weston
+SHOWUI=/usr/local/sbin/alpindroid-show-ui
 
 say() { printf '\n=== %s ===\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -30,34 +39,64 @@ die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "run as root"
 UID_NUM=$(id -u "$DESKTOP_USER" 2>/dev/null) || die "no such user: $DESKTOP_USER"
 
-status() {
-    printf '\n=== service ===\n'
-    rc-service alpindroid-desktop status 2>&1
-    printf '\n=== default runlevel ===\n'
-    rc-update show default 2>/dev/null | grep alpindroid-desktop || echo "  (not enabled)"
-    printf '\n=== processes ===\n'
-    pgrep -a weston | head -n 2
-    pgrep -af 'waydroid session start' | head -n 2
-    printf '\n=== waydroid ===\n'
-    waydroid status 2>&1 | head -n 6
-    printf '\n=== ui log ===\n'
-    tail -n 5 /tmp/alpindroid-show-ui.log 2>/dev/null || echo "  (none)"
+# --------------------------------------------------------------------- pieces
+install_weston_wrapper() {
+    cat > "$WESTON_WRAPPER" <<'WESTON'
+#!/bin/sh
+# Weston launcher for the alpindroid-desktop service: start-stop-daemon cannot
+# set environment variables, and weston needs both of these.
+UID_NUM="${1:-$(id -u)}"
+export XDG_RUNTIME_DIR="/run/user/$UID_NUM"
+export LIBSEAT_BACKEND=seatd
+# kiosk-shell: Waydroid's hwcomposer creates a full-screen surface without a
+# desktop-style window; under desktop-shell it stays invisible.
+exec /usr/bin/weston --backend=drm --drm-device=card0 --renderer=gl \
+    --shell=kiosk --socket=wayland-0 --log=/tmp/weston.log
+WESTON
+    chmod 0755 "$WESTON_WRAPPER"
 }
 
-case "${1:-}" in
-    --status) status; exit 0 ;;
-    --disable)
-        say "disabling autostart"
-        rc-service alpindroid-desktop stop 2>&1 | tail -n 2
-        rc-update del alpindroid-desktop default 2>&1 | tail -n 1
-        exit 0
-        ;;
-esac
+install_show_ui() {
+    cat > "$SHOWUI" <<'SHOWUI_EOF'
+#!/bin/sh
+# Wait for the Waydroid session to be RUNNING and Android to finish booting,
+# then start show-full-ui on the same D-Bus session bus.
+UID_NUM="${1:-$(id -u)}"
+export XDG_RUNTIME_DIR="/run/user/$UID_NUM"
+export WAYLAND_DISPLAY=wayland-0
 
-say "installing $SERVICE"
-cat > "$SERVICE" <<'INITD'
+log() { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >> /tmp/alpindroid-show-ui.log; }
+
+i=0
+while [ "$i" -lt 180 ]; do
+    if waydroid status 2>/dev/null | grep -q 'Session:.*RUNNING'; then
+        BOOTED=$(lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- /system/bin/getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+        if [ "$BOOTED" = "1" ]; then
+            log "android boot_completed=1; launching show-full-ui"
+            BUS=$(tr '\0' '\n' < "/proc/$(pgrep -f 'waydroid session start' | head -n1)/environ" 2>/dev/null \
+                  | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p')
+            if [ -n "$BUS" ]; then
+                DBUS_SESSION_BUS_ADDRESS="$BUS" waydroid show-full-ui >> /tmp/alpindroid-show-ui.log 2>&1
+                log "show-full-ui exited rc=$?"
+            else
+                log "no session bus address found in the session process"
+            fi
+            exit 0
+        fi
+    fi
+    i=$((i + 1))
+    sleep 2
+done
+log "gave up waiting for Android (timeout)"
+exit 1
+SHOWUI_EOF
+    chmod 0755 "$SHOWUI"
+}
+
+install_service() {
+    cat > "$SERVICE" <<'INITD'
 #!/sbin/openrc-run
-# Alpindroid desktop autostart: Weston (DRM/GL) + Waydroid on HDMI.
+# Alpindroid desktop autostart: Weston (kiosk-shell, DRM/GL) + Waydroid on HDMI.
 # Generated by install-alpindroid-autostart.sh — edit that script, not this.
 
 description="Alpindroid desktop (Weston + Waydroid)"
@@ -127,62 +166,59 @@ stop() {
     eend 0
 }
 INITD
-chmod 0755 "$SERVICE"
+    chmod 0755 "$SERVICE"
+}
 
-say "installing /usr/local/sbin/alpindroid-weston"
-cat > /usr/local/sbin/alpindroid-weston <<'WESTON'
-#!/bin/sh
-# Weston launcher for the alpindroid-desktop service: start-stop-daemon cannot
-# set environment variables, and weston needs both of these.
-UID_NUM="${1:-$(id -u)}"
-export XDG_RUNTIME_DIR="/run/user/$UID_NUM"
-export LIBSEAT_BACKEND=seatd
-# kiosk-shell: Waydroid's hwcomposer creates a full-screen surface without a
-# desktop-style window; under desktop-shell it stays invisible. kiosk-shell
-# maps every surface to the whole output, which is what we want here.
-exec /usr/bin/weston --backend=drm --drm-device=card0 --renderer=gl \
-    --shell=kiosk --socket=wayland-0 --log=/tmp/weston.log
-WESTON
-chmod 0755 /usr/local/sbin/alpindroid-weston
+enable_service() {
+    rc-update add alpindroid-desktop default 2>&1 | tail -n 1
+}
 
-say "installing /usr/local/sbin/alpindroid-show-ui"
-cat > /usr/local/sbin/alpindroid-show-ui <<'SHOWUI'
-#!/bin/sh
-# Wait for the Waydroid session to be RUNNING and Android to finish booting,
-# then start show-full-ui on the same D-Bus session bus.
-UID_NUM="${1:-$(id -u)}"
-export XDG_RUNTIME_DIR="/run/user/$UID_NUM"
-export WAYLAND_DISPLAY=wayland-0
+status() {
+    printf '\n=== service ===\n'
+    rc-service alpindroid-desktop status 2>&1
+    printf '\n=== default runlevel ===\n'
+    rc-update show default 2>/dev/null | grep alpindroid-desktop || echo "  (not enabled)"
+    printf '\n=== processes ===\n'
+    pgrep -a weston | head -n 2
+    pgrep -af 'waydroid session start' | head -n 2
+    printf '\n=== waydroid ===\n'
+    waydroid status 2>&1 | head -n 6
+    printf '\n=== shell in use ===\n'
+    grep -o 'shell=[a-z-]*' /usr/local/sbin/alpindroid-weston 2>/dev/null || echo "  (wrapper missing)"
+    printf '\n=== ui log ===\n'
+    tail -n 5 /tmp/alpindroid-show-ui.log 2>/dev/null || echo "  (none)"
+}
 
-log() { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >> /tmp/alpindroid-show-ui.log; }
+# ---------------------------------------------------------------------- main
+case "${1:-}" in
+    --status)
+        status
+        exit 0
+        ;;
+    --install-only)
+        # Used by the image build: install everything and enable the service,
+        # but never try to start a compositor inside a chroot.
+        say "installing pieces (no start)"
+        install_weston_wrapper
+        install_show_ui
+        install_service
+        enable_service
+        exit 0
+        ;;
+    --disable)
+        say "disabling autostart"
+        rc-service alpindroid-desktop stop 2>&1 | tail -n 2
+        rc-update del alpindroid-desktop default 2>&1 | tail -n 1
+        exit 0
+        ;;
+esac
 
-i=0
-while [ "$i" -lt 180 ]; do
-    if waydroid status 2>/dev/null | grep -q 'Session:.*RUNNING'; then
-        BOOTED=$(lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- /system/bin/getprop sys.boot_completed 2>/dev/null | tr -d '\r')
-        if [ "$BOOTED" = "1" ]; then
-            log "android boot_completed=1; launching show-full-ui"
-            BUS=$(tr '\0' '\n' < "/proc/$(pgrep -f 'waydroid session start' | head -n1)/environ" 2>/dev/null \
-                  | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p')
-            if [ -n "$BUS" ]; then
-                DBUS_SESSION_BUS_ADDRESS="$BUS" waydroid show-full-ui >> /tmp/alpindroid-show-ui.log 2>&1
-                log "show-full-ui exited rc=$?"
-            else
-                log "no session bus address found in the session process"
-            fi
-            exit 0
-        fi
-    fi
-    i=$((i + 1))
-    sleep 2
-done
-log "gave up waiting for Android (timeout)"
-exit 1
-SHOWUI
-chmod 0755 /usr/local/sbin/alpindroid-show-ui
-
+say "installing pieces"
+install_weston_wrapper
+install_show_ui
+install_service
 say "enabling in the default runlevel"
-rc-update add alpindroid-desktop default 2>&1 | tail -n 1
+enable_service
 
 say "starting now (a failure here leaves SSH and the text console intact)"
 rc-service alpindroid-desktop restart 2>&1 | tail -n 3
@@ -195,7 +231,9 @@ Control it with:
   tail -f /tmp/weston.log /tmp/alpindroid-show-ui.log
 
 Notes
-  * Weston runs as $DESKTOP_USER through seatd, so seatd must be in the boot
+  * weston runs with --shell=kiosk: Waydroid's hwcomposer surface has no window
+    semantics, so desktop-shell would leave HDMI grey;
+  * weston runs as $DESKTOP_USER through seatd, so seatd must be in the boot
     runlevel and the user must be in the seat group;
   * a failure at any stage keeps the text console and SSH working.
 EOF
