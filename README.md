@@ -17,7 +17,7 @@ and replaces the 1.1 GB Debian rootfs with a ~90 MB Alpine one.
 | Boot chain | Working | Vendor `boot.bin` / `boot.scr` untouched; p1 carries our `Image`, DTB and one overlay, p2 fully replaced |
 | CPU frequency scaling | Working | `ondemand`, 480 MHz – 1.344 GHz, AXP313A `dcdc2` → `vdd-cpu` |
 | Power management | Working | PMIC correctly identified as `axp313a` via DT overlay |
-| HDMI | Working | 1080p output, `hvcc-supply` → `vcc-wifi-io` |
+| HDMI | Working | KMS output on `sun4i-drm`; modes up to 1080p, panel tested here is 1024x600@60.1 |
 | **WiFi** | Working | UNISOC uwe5622 (`sprdwl_ng`), auto-connects |
 | Bluetooth | Working | `sprdbt_tty` |
 | USB | Working | Includes `OpenWare Multi-Touch-V5000` touchscreen |
@@ -51,6 +51,10 @@ Temperature   : 51 C -> 68 C under sustained load, no throttling issues
 ├── kernel/
 │   └── config/config-6.1.31-plus    The exact .config used for the build
 │
+├── config/
+│   ├── weston.ini                   Weston 14 profile (DRM + GL backend, HDMI head)
+│   └── udev/99-alpindroid-touch.rules  Bind generic touchscreens to HDMI-A-1
+│
 ├── patches/
 │   ├── kernel/
 │   │   ├── alpindroid-kernel.patch  Complete kernel diff (8 files, 17 KB)
@@ -71,6 +75,9 @@ Temperature   : 51 C -> 68 C under sustained load, no throttling issues
     ├── build-image.sh               Low-level assembler (base image + rootfs -> image)
     ├── replace-modules.sh           Safe kernel-module replacement
     ├── install-gpu-stack.sh         Inject Mesa via chroot + QEMU
+    ├── install-wayland-stack.sh     Weston 14 + seatd + libinput + touch wiring
+    ├── start-weston.sh              Start Weston on card0 (dev mode, via seatd)
+    ├── wayland-check.sh             Wayland/GPU/touch acceptance checks (21 items)
     ├── alpine-run.sh                Run commands inside the Alpine rootfs (QEMU/binfmt)
     ├── gpu_render_test.c            Single-frame GPU acceptance test
     ├── gpu_render_test               Same test, prebuilt for aarch64
@@ -127,6 +134,56 @@ and aborts on any failure.
 
 ---
 
+## Wayland + touch (v0.19, in progress)
+
+Weston 14.0.2 runs on the v0.18 board image with **no kernel change and no Weston
+build** — everything comes from the Alpine 3.23 aarch64 repositories.
+
+| Layer | Implementation |
+|---|---|
+| Output | `sun4i-drm`, `/dev/dri/card0` (KMS, atomic modeset), head `HDMI-A-1` |
+| Renderer | GL (`gl-renderer.so`) on `/dev/dri/renderD128` — Mesa 25.2.7, Mali-G31 (Panfrost) |
+| Session | `seatd` + `libseat` (`LIBSEAT_BACKEND=seatd`); no root, no `chmod 777 /dev/dri` |
+| Touch | generic USB HID multi-touch: in-kernel `hid_multitouch`, MT-B slots, `INPUT_PROP_DIRECT`, 10 points → `libinput` |
+| Output binding | udev rule sets `WL_OUTPUT=HDMI-A-1` on any device with `ID_INPUT_TOUCHSCREEN=1` |
+
+The touchscreen is **not** driven by a vendor driver. The panel enumerates as a
+standard USB HID device (`222a:0001`, `OpenWare Multi-Touch-V5000`), and the
+in-kernel `hid_multitouch` module (`CONFIG_HID_MULTITOUCH=m` in
+`kernel/config/config-6.1.31-plus`) turns it into an MT-B input node with
+`INPUT_PROP_DIRECT`. The same wiring therefore works for any HID multi-touch
+panel — nothing here is specific to this screen.
+
+```sh
+# on the board, as root: packages, hid_multitouch, seatd, udev rule, weston.ini
+sh scripts/install-wayland-stack.sh alpine
+
+# as the desktop user: DRM backend on card0, GL renderer on Panfrost
+sh scripts/start-weston.sh -b
+
+# acceptance: HDMI output, GL renderer (not llvmpipe), touch binding, dmabuf
+sh scripts/wayland-check.sh --client --dmabuf
+```
+
+Measured on the ZeroW:
+
+```
+weston 14.0.2
+libseat: session control granted            (seatd backend)
+using /dev/dri/card0                        (sun4i-drm)
+Using rendering device: /dev/dri/renderD128
+GL renderer: Mali-G31 (Panfrost)            OpenGL ES 3.1 Mesa 25.2.7
+Output 'HDMI-A-1' enabled                   1024x600@60.1, preferred
+Touchscreen - OpenWare Multi-Touch-V5000 - event3   (MT-B, PROP=DIRECT)
+wayland-check.sh                            PASS 21  FAIL 0
+```
+
+Status: **development mode only** — Weston is started by hand over SSH/TTY. No
+autostart service is installed yet, so a crashing compositor cannot lock you out
+of the board. v0.18 stays frozen; all of this lives in the user-space layer.
+
+---
+
 ## How the modifications were found
 
 Five distinct defects, each confirmed on hardware. Full write-up in `CHANGELOG-Alpindroid.md`.
@@ -177,7 +234,7 @@ Wiring: `PI5 -> USB-TTL RX`, `PI6 -> USB-TTL TX`, `GND -> GND`, **VCC left uncon
 
 ## Roadmap
 
-- **v0.19** — Weston (DRM backend) + Panfrost + HDMI + touchscreen
+- **v0.19** — Weston (DRM backend) + Panfrost + HDMI + touchscreen — path working on hardware, image integration pending
 - **v0.20** — Waydroid container
 - **v0.21** — Android graphics acceleration
 

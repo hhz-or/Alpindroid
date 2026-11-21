@@ -364,3 +364,71 @@ sudo sh scripts/build-alpindroid.sh v0.19 /tmp/newmods/lib/modules/6.1.31+
 ```
 
 Full build time: ~25 minutes for the kernel on 8 cores, ~3 minutes for the image.
+---
+
+## 14. v0.19 bring-up — Wayland + generic touch (in progress)
+
+Nothing in the v0.18 kernel changed. Weston 14.0.2, seatd and libinput are plain
+Alpine 3.23 aarch64 packages running against the existing sun4i-drm + Panfrost
+stack.
+
+### 14.1 Session layer
+
+`seatd` 0.9.1 with `libseat`: socket `/run/seatd.sock` owned by `root:seat`, the
+desktop user added to `seat`, `LIBSEAT_BACKEND=seatd`. Weston therefore runs as
+an unprivileged user — DRM master and input access are handed over by seatd, no
+`chmod 777 /dev/dri` and no root-owned compositor.
+
+### 14.2 Output and renderer
+
+```
+using /dev/dri/card0                        sun4i-drm, atomic modesetting
+Using rendering device: /dev/dri/renderD128
+GL renderer: Mali-G31 (Panfrost)            OpenGL ES 3.1 Mesa 25.2.7
+Output 'HDMI-A-1' enabled                   1024x600@60.1, preferred
+```
+
+`card1` / `renderD128` is render-only; every scanout goes through `card0`. The
+panel reports 1024x600 via EDID (`PNP(LTM) LONTIUM`), so `mode=preferred` is used
+instead of forcing a mode the panel cannot lock. EDID has a malformed CTA-861
+extension block; the driver logs a conformity warning and continues.
+
+### 14.3 Touch is a generic HID device
+
+The panel is not a vendor char device. USB identity `222a:0001`
+("OpenWare Multi-Touch-V5000"), three HID interfaces:
+
+| Interface | Driver | Node | libinput role |
+|---|---|---|---|
+| input0 | `hid-multitouch` | `event3` (input6) | touchscreen, `PROP=2` (DIRECT), `ABS=2608…003` (MT-B slot + X + Y), 10 points |
+| input1 | `hid-generic` | `event4` | keyboard |
+| input2 | `hid-generic` | `event5` | pointer |
+
+`CONFIG_HID_MULTITOUCH=m` was already in our config, so the standard in-kernel
+multi-touch path was available all along — only the user-space side was missing.
+`hid_multitouch` is also listed in `/etc/modules` so it does not depend on udev
+winning the coldplug race with the compositor.
+
+### 14.4 Binding touch to the head
+
+Weston associates an input device with the first enabled output unless udev says
+otherwise, which is why the first session logged
+`input device event3 has no enabled output associated`. `config/udev/99-alpindroid-touch.rules`
+sets `WL_OUTPUT=HDMI-A-1` on every `ID_INPUT_TOUCHSCREEN=1` device, so the mapping
+no longer depends on bring-up order and keeps working with a second head.
+
+### 14.5 Acceptance
+
+`scripts/wayland-check.sh` performs 21 checks — connector state and modeset, GL
+renderer identity, `renderD128` usage, absence of llvmpipe/softpipe, seatd
+session grant, `hid_multitouch` presence, MT-B abs capabilities,
+`INPUT_PROP_DIRECT`, `WL_OUTPUT`, plus optional EGL and dmabuf clients:
+
+```
+PASS 21   FAIL 0
+RESULT: PASS
+```
+
+Not done yet: touch coordinate verification with a real finger (and
+`weston-touch-calibrator` if the panel needs a matrix), autostart service, and
+baking the stack into a v0.19 image. v0.18 remains the frozen baseline.
