@@ -11,6 +11,7 @@ and replaces the 1.1 GB Debian rootfs with a ~90 MB Alpine one.
 Since **v0.22** that goal is reached: Android (LineageOS 20) runs in an LXC container as the
 primary UI, rendering through the same Panfrost/Mesa stack as the Weston host and booting
 without any network access.
+The full functionality of the Android system will be implemented gradually.
 
 ---
 
