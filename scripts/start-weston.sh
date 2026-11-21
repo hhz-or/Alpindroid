@@ -12,6 +12,8 @@
 # Usage:
 #   sh start-weston.sh                 # foreground, Ctrl-C to stop
 #   sh start-weston.sh -b              # background (setsid), returns at once
+#   sh start-weston.sh -b -D           # background + "weston --debug"
+#                                      # (input/touch events land in the log)
 #   sh start-weston.sh -p pixman       # software fallback, for comparison
 #   sh start-weston.sh -c /path/weston.ini
 #
@@ -25,6 +27,7 @@
 set -e
 
 BACKGROUND=0
+DEBUG=0
 DRM_DEVICE="${DRM_DEVICE:-card0}"
 RENDERER="${RENDERER:-gl}"
 SOCKET="${SOCKET:-wayland-0}"
@@ -36,7 +39,7 @@ usage() {
     exit "${1:-0}"
 }
 
-while getopts "bd:r:l:c:p:s:h" opt; do
+while getopts "bd:r:l:c:p:s:hD" opt; do
     case "$opt" in
         b) BACKGROUND=1 ;;
         d) DRM_DEVICE="$OPTARG" ;;
@@ -45,10 +48,13 @@ while getopts "bd:r:l:c:p:s:h" opt; do
         l) LOG="$OPTARG" ;;
         s) SOCKET="$OPTARG" ;;
         c) CONFIG="$OPTARG" ;;
+        D) DEBUG=1 ;;
         h) usage 0 ;;
         *) usage 1 ;;
     esac
 done
+shift $((OPTIND - 1))
+EXTRA="$*"
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
@@ -73,6 +79,13 @@ set -- --backend=drm --drm-device="$DRM_DEVICE" --renderer="$RENDERER" \
        --socket="$SOCKET" --log="$LOG"
 if [ -n "$CONFIG" ]; then
     set -- "$@" --config="$CONFIG"
+fi
+if [ "$DEBUG" -eq 1 ]; then
+    set -- "$@" --debug
+fi
+if [ -n "$EXTRA" ]; then
+    # shellcheck disable=SC2086
+    set -- "$@" $EXTRA
 fi
 
 echo "weston: device=$DRM_DEVICE renderer=$RENDERER socket=$SOCKET"
