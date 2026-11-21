@@ -546,7 +546,7 @@ Baking it into the image (`scripts/build-alpindroid.sh`):
 
 ---
 
-## 15. v0.20 bring-up — Waydroid (in progress)
+## 15. v0.22 — Waydroid as the primary UI (Android on top of v0.19)
 
 Goal: Android (LineageOS 20 "VANILLA") in an LXC container on top of the v0.19
 graphics stack. Everything below is measured on the board.
@@ -702,7 +702,7 @@ the host `dmesg` stream, not from the console.
 
 ### 15.8 Version bookkeeping
 
-`v0.20-debug` marks the state where the container finally stays up. It is still
+`v0.22-debug` marks the state where the container finally stays up. It is still
 not a release image: Android's UI has only just been launched, touch and GLES
 inside Android are unverified, audio is silent (no PulseAudio on the host), IPv6
 is missing inside the container, and the container is not started at boot yet.
@@ -744,7 +744,7 @@ Kernel stays as validated: `DMABUF_HEAPS{,_SYSTEM,_CMA}=y`, BinderFS, Panfrost,
 cgroup2 — and `CONFIG_PSI_DEFAULT_DISABLED=y` is deliberately kept, with
 `psi=1` in the boot args instead of another 25-minute rebuild.
 
-Not enabled yet, by design: Waydroid autostart. `v0.20` becomes the release
+Not enabled yet, by design: Waydroid autostart. `v0.22` becomes the release
 candidate only after three things are verified on hardware — the Android desktop
 is visible on HDMI, touch inside Android works, and GLES renders through
 Panfrost from inside the container.

@@ -344,7 +344,7 @@ chk "彩色终端 profile"                   test -f "$ROOTMNTP/etc/profile.d/al
 chk "字体已安装"                         sh -c "ls -A '$ROOTMNTP/usr/share/fonts' 2>/dev/null | grep -q ."
 chk "fontconfig 规则（monospace/CJK）"   test -f "$ROOTMNTP/etc/fonts/local.conf"
 
-# v0.20：Android 容器（软件包与配置固化，镜像本身首次启动下载）
+# v0.22：Android 容器（软件包与配置固化，镜像本身首次启动下载）
 chk "waydroid 已安装"                    test -x "$ROOTMNTP/usr/bin/waydroid"
 chk "waydroid OpenRC 服务"               test -f "$ROOTMNTP/etc/init.d/waydroid-container"
 chk "lxc 已安装"                         test -x "$ROOTMNTP/usr/bin/lxc-start"

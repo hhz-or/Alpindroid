@@ -8,6 +8,10 @@ and replaces the 1.1 GB Debian rootfs with a ~90 MB Alpine one.
 
 **No AOSP compilation is involved.** The goal is a thin Alpine host that runs Android on top of it.
 
+Since **v0.22** that goal is reached: Android (LineageOS 20) runs in an LXC container as the
+primary UI, rendering through the same Panfrost/Mesa stack as the Weston host and booting
+without any network access.
+
 ---
 
 ## Status: v0.18 (stable baseline)
@@ -25,6 +29,9 @@ and replaces the 1.1 GB Debian rootfs with a ~90 MB Alpine one.
 | BinderFS | Working | `binder` / `hwbinder` / `vndbinder` (Waydroid prerequisite) |
 | cgroup2 | Working | Auto-mounted (Waydroid prerequisite) |
 | GPU validation | Built in | `/usr/local/bin/gpu_render_test` works out of the box |
+| Waydroid container | Working | LXC 6 + `lineage-20.0` VANILLA/MAINLINE, PSI, DMABUF_HEAPS, six container fixes |
+| Android UI | Working | `waydroid show-full-ui` on Weston; session log reaches `Android with user 0 is ready` |
+| Offline boot | Working | container comes up with the default route removed (images are local) |
 
 ### Verification evidence
 
@@ -36,6 +43,19 @@ Context churn : 100 create-destroy cycles / 16 s / 0 failures
 Runtime PM    : 100/100 real suspend -> resume -> render cycles passed
 Temperature   : 51 C -> 68 C under sustained load, no throttling issues
 ```
+
+---
+
+## Version milestones
+
+| Version | Milestone |
+|---|---|
+| v0.10 | Hardware base: PMIC, cpufreq, thermal, HDMI, USB, WiFi |
+| v0.18 | GPU acceleration: Panfrost, GLES 3.1, stress + runtime-PM tests |
+| v0.19 | Wayland: Weston on DRM/card0, HDMI, generic HID touch, adaptive head detection |
+| **v0.22** | **Waydroid as the primary UI**: BinderFS, DMABUF heaps, LXC, PSI, Android SystemServer + SurfaceFlinger, container stable and offline-capable |
+
+v0.20/v0.21 were skipped as separate tags — the container work landed as one release, v0.22.
 
 ---
 
@@ -259,7 +279,7 @@ Wiring: `PI5 -> USB-TTL RX`, `PI6 -> USB-TTL TX`, `GND -> GND`, **VCC left uncon
 | `ssh.txt` | **Contains plaintext credentials** |
 | `debian12/` | Vendor build-tool copy, re-obtainable from GitHub |
 
-## How the v0.20 image is assembled
+## How the v0.22 image is assembled
 
 The Android images (2.3 GB) are **not** part of the base image — the release build
 stays ~2.7 GB and the container is materialised on the board, so Android can be
@@ -274,7 +294,7 @@ upgraded without republishing the whole file.
 | first boot | `waydroid-setup` downloads the Android images (~1.1 GB) and initialises the container |
 | each session | `start-weston.sh -b`, then `dbus-run-session -- sh -c 'waydroid session start &'`, then `waydroid show-full-ui` |
 
-Autostart is deliberately **not** enabled yet: v0.20 becomes the release candidate
+Autostart is deliberately **not** enabled yet: v0.22 becomes the release candidate
 only after the Android desktop, touch inside Android and GLES-through-Panfrost are
 verified on hardware.
 
@@ -283,8 +303,7 @@ verified on hardware.
 ## Roadmap
 
 - **v0.19** — Weston (DRM backend) + Panfrost + HDMI + touchscreen — path working on hardware, image integration pending
-- **v0.20** — Waydroid container — **in progress**: Android boots and the container now stays up (v0.20-debug)
-- **v0.21** — Android graphics acceleration
+- **v0.22** — Waydroid as the primary UI — **in progress**: Android boots to `user 0 is ready`, container stays up, boots with no internet; touch inside Android and GLES-through-Panfrost still to be verified
 
 ## License
 

@@ -1,12 +1,12 @@
 #!/bin/sh
 # ============================================================================
-# Alpindroid v0.20: Waydroid (Android 14 / LineageOS 20 container)
+# Alpindroid v0.22: Waydroid (Android 14 / LineageOS 20 container) — the primary UI
 #
 # Runs on the board as root. Idempotent for everything except `waydroid init`
 # (which only downloads once; pass --reinit to wipe and re-fetch the images).
 #
 # Kernel prerequisites — already enabled in kernel/config/config-6.1.31-plus
-# since v0.20 and required for Android's graphics allocator:
+# since v0.22 and required for Android's graphics allocator:
 #   CONFIG_DMABUF_HEAPS=y
 #   CONFIG_DMABUF_HEAPS_SYSTEM=y
 #   CONFIG_DMABUF_HEAPS_CMA=y
@@ -95,7 +95,7 @@ say "2/7 kernel prerequisites"
 if [ ! -d /dev/dma_heap ]; then
     printf '  WARN /dev/dma_heap missing -> Android graphics will fail.\n'
     printf '       Rebuild the kernel with CONFIG_DMABUF_HEAPS{,_SYSTEM,_CMA}=y\n'
-    printf '       (kernel/config/config-6.1.31-plus already has them since v0.20).\n'
+    printf '       (kernel/config/config-6.1.31-plus already has them since v0.22).\n'
 else
     echo "  /dev/dma_heap: $(ls /dev/dma_heap | tr '\n' ' ')"
 fi
