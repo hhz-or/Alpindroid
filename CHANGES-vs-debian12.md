@@ -7,7 +7,7 @@ Baseline: `2026-5-20_V2.6.0_WalnutPi-1B_6.1.31_debian12_server.img`
 
 ## 1. Boot partition (p1)
 
-Only **3 of 24 files** are modified.
+Only **4 of the 24 files** are touched: 3 are modified and 1 overlay is new.
 
 | File | Change |
 |---|---|

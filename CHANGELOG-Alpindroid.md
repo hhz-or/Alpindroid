@@ -11,7 +11,7 @@ Current product: `Alpindroid-ZeroW-v0.18.img`
 
 ## 1. Image architecture
 
-### 1.1 Boot partition (p1) — 3 of 24 files changed
+### 1.1 Boot partition (p1) — 4 of 24 files changed (3 modified + 1 new)
 
 | File | Change |
 |---|---|
@@ -164,7 +164,7 @@ cp -a /tmp/newmods/lib/modules/6.1.31+/. "$ROOT/lib/modules/6.1.31+/"
 The `src/.` form copies the *contents*, not the directory itself.
 
 **Related trap:** the vendor base image uses `6.1.31` (no `+`), our kernel is `6.1.31+`.
-`build-image.sh` now accepts both.
+`scripts/build-image.sh` now accepts both.
 
 **Verify all three levels, not just "the file exists":**
 
@@ -211,8 +211,8 @@ panfrost_devfreq_resume(pfdev);
 
 ### 7.3 Fix
 
-Apply `patches/kernel/panfrost-resume-fix.patch` (or run `fix_panfrost_pmrt.py`), and make
-`suspend` symmetric.
+Apply `patches/kernel/panfrost-resume-fix.patch` (or run
+`patches/kernel/fix_panfrost_pmrt.py`), and make `suspend` symmetric.
 
 ### 7.4 Verification
 

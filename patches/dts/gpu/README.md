@@ -64,8 +64,10 @@ unrelated node, `devm_regulator_bulk_get()` fails, and the driver silently retur
 
 ### ① Apply the PPU driver
 
-`sun50i-h6-prcm-ppu-6.1.c` is the mainline `drivers/pmdomain/sunxi/sun50i-h6-prcm-ppu.c`
-(Arm Ltd. 2024, GPL-2.0) adapted to 6.1. Four changes:
+`../../kernel/ppu/sun50i-h6-prcm-ppu-6.1.c` is the mainline
+`drivers/pmdomain/sunxi/sun50i-h6-prcm-ppu.c` (Arm Ltd. 2024, GPL-2.0) adapted to 6.1.
+The unmodified mainline copy is kept next to it as `sun50i-h6-prcm-ppu.c`, for reference.
+Four changes:
 
 | Mainline (6.10+) | 6.1 equivalent |
 |---|---|
@@ -74,10 +76,11 @@ unrelated node, `devm_regulator_bulk_get()` fails, and the driver silently retur
 | `devm_kzalloc_objs(dev, *ppu->domains, n)` | `devm_kcalloc(dev, n, sizeof(*ppu->domains), GFP_KERNEL)` |
 | missing includes | add `<linux/of_device.h>`, `<linux/slab.h>` |
 
-Install into `drivers/soc/sunxi/`:
+Install into `drivers/soc/sunxi/` — run from the kernel tree root, with `<repo>` being
+a checkout of this repository:
 
 ```bash
-cp sun50i-h6-prcm-ppu-6.1.c  drivers/soc/sunxi/sun50i-h6-prcm-ppu.c
+cp <repo>/patches/kernel/ppu/sun50i-h6-prcm-ppu-6.1.c  drivers/soc/sunxi/sun50i-h6-prcm-ppu.c
 
 cat >> drivers/soc/sunxi/Kconfig <<'EOF'
 
@@ -100,15 +103,15 @@ make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
 
 Requirements already satisfied: `CONFIG_PM_GENERIC_DOMAINS=y`, `CONFIG_PM_GENERIC_DOMAINS_OF=y`.
 
-> **Note:** the full patch set (`../alpindroid-kernel.patch`) does all of the above in one go —
+> **Note:** the full patch set (`../../kernel/alpindroid-kernel.patch`) does all of the above in one go —
 > `scripts/setup-kernel.sh` applies it automatically.
 
 ### ② Apply the DTS patches
 
 ```bash
 cd <kernel>
-patch -p1 < dtsi-prcm-ppu.patch        # adds the prcm_ppu node
-patch -p1 < board-dts-gpu-fix.patch    # GPU rail + single OPP + power-domains
+patch -p1 < <repo>/patches/dts/gpu/dtsi-prcm-ppu.patch        # adds the prcm_ppu node
+patch -p1 < <repo>/patches/dts/gpu/board-dts-gpu-fix.patch    # GPU rail + single OPP + power-domains
 make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- allwinner/sun50i-h616-walnutpi-1b.dtb
 ```
 
@@ -152,7 +155,7 @@ panfrost_devfreq_resume(pfdev);
 `pm_runtime_enable()` unconditionally, so the runtime-PM path is live and the
 missing steps apply.
 
-Fix (`panfrost-resume-fix.patch`, or run `fix_panfrost_pmrt.py`):
+Fix (`../../kernel/panfrost-resume-fix.patch`, or run `../../kernel/fix_panfrost_pmrt.py`):
 
 ```c
 int panfrost_device_resume(struct device *dev)
@@ -239,8 +242,9 @@ Rendering (scripts/gpu_render_test.c):
 | File | Description |
 |---|---|
 | `../../kernel/alpindroid-kernel.patch` | **Complete kernel diff** — includes all of the above; this is the recommended way |
-| `sun50i-h6-prcm-ppu-6.1.c` | Standalone PPU driver, 6.1-adapted |
+| `../../kernel/ppu/sun50i-h6-prcm-ppu-6.1.c` | Standalone PPU driver, adapted to the 6.1 API |
+| `../../kernel/ppu/sun50i-h6-prcm-ppu.c` | Unmodified mainline PPU driver, kept for reference |
 | `dtsi-prcm-ppu.patch` | Adds the `prcm_ppu` node to `sun50i-h616.dtsi` |
 | `board-dts-gpu-fix.patch` | Board DTS: GPU rail, single OPP, `power-domains` |
-| `../panfrost-resume-fix.patch` | The `resume` fix |
-| `../fix_panfrost_pmrt.py` | Applies the `resume` fix idempotently |
+| `../../kernel/panfrost-resume-fix.patch` | The `resume` fix |
+| `../../kernel/fix_panfrost_pmrt.py` | Applies the `resume` fix idempotently |

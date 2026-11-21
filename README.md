@@ -14,7 +14,7 @@ and replaces the 1.1 GB Debian rootfs with a ~90 MB Alpine one.
 
 | Subsystem | Status | Key implementation |
 |---|---|---|
-| Boot chain | Working | Vendor `boot.bin` / `boot.scr` / DTB kept intact; only p2 replaced |
+| Boot chain | Working | Vendor `boot.bin` / `boot.scr` untouched; p1 carries our `Image`, DTB and one overlay, p2 fully replaced |
 | CPU frequency scaling | Working | `ondemand`, 480 MHz – 1.344 GHz, AXP313A `dcdc2` → `vdd-cpu` |
 | Power management | Working | PMIC correctly identified as `axp313a` via DT overlay |
 | HDMI | Working | 1080p output, `hvcc-supply` → `vcc-wifi-io` |
@@ -55,7 +55,10 @@ Temperature   : 51 C -> 68 C under sustained load, no throttling issues
 │   ├── kernel/
 │   │   ├── alpindroid-kernel.patch  Complete kernel diff (8 files, 17 KB)
 │   │   ├── panfrost-resume-fix.patch
-│   │   └── fix_panfrost_pmrt.py     Applies the resume fix idempotently
+│   │   ├── fix_panfrost_pmrt.py     Applies the resume fix idempotently
+│   │   ├── panfrost_device.c        Patched panfrost source (reference copy)
+│   │   ├── panfrost_devfreq.c       Patched panfrost source (reference copy)
+│   │   └── ppu/                     PPU driver: mainline copy + 6.1-adapted copy
 │   └── dts/
 │       ├── pmic-axp313a.dts         Device-tree overlay source (8 fragments)
 │       ├── pmic-axp313a.dtbo        Compiled overlay
@@ -65,11 +68,19 @@ Temperature   : 51 C -> 68 C under sustained load, no throttling issues
 └── scripts/
     ├── setup-kernel.sh              Clone upstream + apply patches (one command)
     ├── build-alpindroid.sh          One-shot image builder (15 automated checks)
+    ├── build-image.sh               Low-level assembler (base image + rootfs -> image)
     ├── replace-modules.sh           Safe kernel-module replacement
     ├── install-gpu-stack.sh         Inject Mesa via chroot + QEMU
+    ├── alpine-run.sh                Run commands inside the Alpine rootfs (QEMU/binfmt)
     ├── gpu_render_test.c            Single-frame GPU acceptance test
+    ├── gpu_render_test               Same test, prebuilt for aarch64
     ├── gpu_stress_test.c            GPU stress test (10k frames + 100 contexts)
     ├── hw-check.sh                  Hardware self-check
+    ├── full-test.sh                 On-board full functional test / state snapshot
+    ├── hdmi-diag.sh                 HDMI / DRM / fbcon display-path diagnostics
+    ├── pmic-diag.sh                 Read-only PMIC information dump
+    ├── pmic-regs.sh                 Raw PMIC register dump (i2c-tools)
+    ├── pmic-force-read.sh           Forced PMIC reads (-f, bypasses the bound driver)
     ├── serial-capture.ps1           Serial log capture (Windows)
     └── ssh-run.ps1                  Remote exec/upload/download helper (Windows)
 ```
