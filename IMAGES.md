@@ -7,7 +7,7 @@ This file records their checksums for verification and version tracking.
 
 | Version | SHA256 | Notes |
 |---|---|---|
-| **v0.22** | `111ecaba36314386308b97e3656fc8f305d5b2afc6f4fe8848b4b0fbb1ca48c1` | **Latest**: Waydroid (LineageOS 20) as the primary UI. Weston/Panfrost/touch as in v0.19, plus lxc + waydroid packages, the six container fixes, `extraargs=psi=1`, first-boot root growth and `waydroid-setup`. Android images are **not** in the image (downloaded once on the board). |
+| **v0.22** | `bfccfe8d6f9141222fb371708ec40a80ff49d0fa09078be862c48904239060d4` | **Latest**: Waydroid (LineageOS 20) as the primary UI. Weston/Panfrost/touch as in v0.19, plus lxc + waydroid packages, the six container fixes, `extraargs=psi=1`, first-boot root growth and `waydroid-setup`. Android images are **not** in the image (downloaded once on the board). |
 | v0.18 | `79a83716919a6fa12fa516727f9cd9ef425953d9de0d2b5e4a5377dc197abbb5` | Kernel-stable baseline: GPU fully working, Mesa preinstalled, cgroup2 auto-mounted |
 | v0.17 | `03e9647446ded3d888b6a6e8e458314b258c5e34538cb71baf0a20c7190967c6` | First version with working GPU rendering (resume fix) |
 | v0.16 | `536c81782d9402afe3283bbb5d7cc1d4cf43132c9edcd6beb6812bb5077f3856` | Fixed `/lib/modules` layout; WiFi restored |
