@@ -466,5 +466,39 @@ forces the rebind, which the vendor image never does). `scripts/touch-diag.sh`
 prints the whole chain above and, with `--live`, whether raw events arrive at
 all — it runs unchanged on the vendor Debian 12 image so the two can be compared.
 
+### 14.7 Vendor A/B on the same board, same panel, same cable
+
+Flashed the vendor `2026-5-20_V2.6.0_WalnutPi-1B_6.1.31_debian12_server.img`
+(kernel `6.1.31 #98`, SSH `pi@`, no desktop at all — no Xorg, no
+display-manager) and measured the same way:
+
+```
+[ 2.920209] hid-generic 0003:222A:0001.0001: input,hidraw0 ... input0
+[ 2.985138] hid-generic 0003:222A:0001.0002: input,hidraw1 ... Keyboard
+[ 2.990922] hid-generic 0003:222A:0001.0003: input,hidraw2 ... Mouse
+[ 5.500304] hid-multitouch 0003:222A:0001.0001: input,hidraw0 ... input0
+[13.300939] usb 7-1: reset full-speed USB device number 2 using ohci-platform
+```
+
+So the vendor image shows the *same* `hid-generic` → `hid-multitouch` rebind and
+the *same* `usb reset` a few seconds later — both are normal for this device and
+were wrongly suspected earlier.
+
+Touching the panel on the vendor image produces nothing either:
+
+| Probe on the vendor image | Result |
+|---|---|
+| `dd if=/dev/input/event0` (node with `PROP=2`) | blocks, 0 bytes |
+| `ohci_hcd:usb7` interrupt counter | 110 → 110 |
+| `/sys/kernel/debug/hid` | not available in that kernel config |
+
+**Conclusion:** the controller does not report on either OS. This is not an
+Alpindroid configuration problem — kernel config, board DTB and rootfs were
+compared, and the runtime behaviour matches the vendor image. The remaining
+candidates are on the panel/controller side: touch FPC seating, the controller's
+power rail, or firmware initialisation that only the vendor tooling performs
+(the published `walnutpi-build` has no touch handling beyond generic
+`xorg` + `xserver-xorg-input-evdev`).
+
 Touch is therefore **not** part of the v0.19 acceptance yet: HDMI output, GPU
 rendering and pointer input work, the touchscreen path is wired but silent.
