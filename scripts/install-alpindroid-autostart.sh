@@ -137,8 +137,11 @@ cat > /usr/local/sbin/alpindroid-weston <<'WESTON'
 UID_NUM="${1:-$(id -u)}"
 export XDG_RUNTIME_DIR="/run/user/$UID_NUM"
 export LIBSEAT_BACKEND=seatd
+# kiosk-shell: Waydroid's hwcomposer creates a full-screen surface without a
+# desktop-style window; under desktop-shell it stays invisible. kiosk-shell
+# maps every surface to the whole output, which is what we want here.
 exec /usr/bin/weston --backend=drm --drm-device=card0 --renderer=gl \
-    --socket=wayland-0 --log=/tmp/weston.log
+    --shell=kiosk --socket=wayland-0 --log=/tmp/weston.log
 WESTON
 chmod 0755 /usr/local/sbin/alpindroid-weston
 
