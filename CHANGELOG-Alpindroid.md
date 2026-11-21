@@ -432,3 +432,39 @@ RESULT: PASS
 Not done yet: touch coordinate verification with a real finger (and
 `weston-touch-calibrator` if the panel needs a matrix), autostart service, and
 baking the stack into a v0.19 image. v0.18 remains the frozen baseline.
+### 14.6 Touch bring-up status (open)
+
+The touch controller initialises but never reports, and everything below is
+measured, not guessed:
+
+| Layer | Result |
+|---|---|
+| USB enumeration | OK — `222a:0001`, three HID interfaces, full-speed on the OHCI controller |
+| HID report descriptor | OK — `Usage Page Digitizer / Usage Touch Screen`, Report ID `0x15`, MT-B contacts, X 0..1920 / Y 0..1080 |
+| Driver binding | OK — `hid-multitouch` on interface 0, `INPUT_PROP_DIRECT`, 10 points |
+| udev + output binding | OK — `ID_INPUT_TOUCHSCREEN=1`, `WL_OUTPUT=HDMI-A-1` (our rule is picked up: `associating input device event3 with output HDMI-A-1 (HDMI-A-1 by udev)`) |
+| evdev (`/dev/input/eventN`) | **no events** |
+| HID core (`/sys/kernel/debug/hid/*/events`) | **no events** |
+| raw reports (`/dev/hidraw0/1/2`) | **no data** |
+| OHCI interrupt counter while touching | **unchanged** |
+| Vendor kernel config (extracted from the image) | identical for `CONFIG_HID_MULTITOUCH`, `CONFIG_TOUCHSCREEN_USB_COMPOSITE`, `CONFIG_HID_GENERIC`, `CONFIG_USB_HID` |
+| Board DTB vs vendor DTB | identical for all USB/PHY nodes (only phandle renumbering from our added `prcm_ppu`) |
+| Vendor rootfs | no device-specific udev rule or libinput quirk (full-image scan for `222a:0001` / `Multi-Touch-V5000` / `OpenWare` = 0 hits); only generic `xorg` + `xserver-xorg-input-evdev` |
+
+Observations worth keeping:
+
+* cold boot logs `usb 5-1: reset full-speed USB device number 2 using ohci-platform`
+  ~6 s *after* `hid-multitouch` binds, and nothing re-probes afterwards;
+* enumeration always goes `hid-generic` first, then `hid-multitouch` rebinds
+  interface 0 a few seconds later;
+* forcing a re-enumeration (`authorized 0 → 1`) or `unbind/bind` re-creates the
+  device and the input nodes, but still no reports.
+
+Consequence for this repository: `install-wayland-stack.sh` deliberately does
+**not** add `hid_multitouch` to `/etc/modules` any more (that defers the load and
+forces the rebind, which the vendor image never does). `scripts/touch-diag.sh`
+prints the whole chain above and, with `--live`, whether raw events arrive at
+all — it runs unchanged on the vendor Debian 12 image so the two can be compared.
+
+Touch is therefore **not** part of the v0.19 acceptance yet: HDMI output, GPU
+rendering and pointer input work, the touchscreen path is wired but silent.

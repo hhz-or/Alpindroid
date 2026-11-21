@@ -55,25 +55,22 @@ apk add --no-cache \
     weston-terminal \
     seatd \
     seatd-openrc \
-    libinput-tools
+    libinput-tools \
+    adwaita-icon-theme
 
 # ------------------------------------------------------- 2. generic touch path
 say "2/6 kernel: hid_multitouch (generic HID multi-touch driver)"
-# The module ships with our 6.1.31+ kernel (CONFIG_HID_MULTITOUCH=m). udev
-# normally autoloads it from the USB modalias; /etc/modules makes it
-# deterministic even if coldplug races the desktop session.
+# The module ships with our 6.1.31+ kernel (CONFIG_HID_MULTITOUCH=m) and udev
+# autoloads it from the USB modalias the moment the device enumerates — the same
+# way the vendor image does it. Do NOT add it to /etc/modules: that defers the
+# load until after hid-generic has already bound the interface, forcing a rebind.
 if modprobe hid_multitouch 2>/dev/null; then
-    echo "  hid_multitouch loaded"
+    echo "  hid_multitouch loaded (udev autoloads it on hotplug as well)"
 else
     echo "  WARN hid_multitouch not loadable (kernel module missing?)"
 fi
-mkdir -p /etc/modules-load.d
-if ! grep -qx 'hid_multitouch' /etc/modules 2>/dev/null; then
-    echo 'hid_multitouch' >> /etc/modules
-    echo "  added hid_multitouch to /etc/modules"
-fi
-if [ ! -f /etc/modules-load.d/hid_multitouch.conf ]; then
-    echo 'hid_multitouch' > /etc/modules-load.d/hid_multitouch.conf
+if grep -qx 'hid_multitouch' /etc/modules 2>/dev/null; then
+    echo "  NOTE hid_multitouch is listed in /etc/modules; the vendor image does not do that"
 fi
 
 # ---------------------------------------------------------------- 3. seatd
