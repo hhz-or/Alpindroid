@@ -748,3 +748,44 @@ Not enabled yet, by design: Waydroid autostart. `v0.20` becomes the release
 candidate only after three things are verified on hardware — the Android desktop
 is visible on HDMI, touch inside Android works, and GLES renders through
 Panfrost from inside the container.
+
+### 15.10 Verified: the container starts with no internet at all
+
+The images live on the card (`/var/lib/waydroid/images`: 1.9 GB `system.img` +
+402 MB `vendor.img`), so bringing Android up must not need the network. Measured
+by deleting the default route (LAN kept, so SSH survives) and restarting the
+whole stack:
+
+```
+$ ip route
+192.168.137.0/24 dev wlan0  proto kernel  scope link  src 192.168.137.184
+192.168.240.0/24 dev waydroid0 proto kernel scope link  src 192.168.240.1
+                                  # no default route
+$ wget -qO- https://mirrors.aliyun.com
+wget: can't connect to remote host (222.73.33.51): Network unreachable
+
+# weston -> waydroid-container -> waydroid-net.sh -> session
+$ waydroid status
+Session:        RUNNING
+Container:      RUNNING
+Vendor type:    MAINLINE
+IP address:     192.168.240.112
+Session user:   alpine(1000)
+Wayland display: wayland-0
+
+$ grep 'is ready' /tmp/offline2.log
+[02:53:37] Android with user 0 is ready
+```
+
+So the boot chain needs **no** external network: the Android images are local,
+`waydroid0` + dnsmasq only serve the internal 192.168.240.0/24, and Waydroid's
+OTA endpoints are only touched by `waydroid init`, never by a session start.
+
+Network is needed exactly once, on a freshly flashed card, to run
+`waydroid-setup` (≈1.1 GB). Everything after that — growpart, container start,
+Android boot — works offline. On this board the growth step is already done:
+
+```
+/dev/root  117.0G  3.4G used  108.9G available  3%
+mmcblk1p2  124721135 sectors   (the whole card)
+```
