@@ -79,6 +79,7 @@ Temperature   : 51 C -> 68 C under sustained load, no throttling issues
     ├── wayland-adapt.sh             Detect the connected head, regenerate touch binding
     ├── install-terminal-polish.sh   Colour prompt, LS_COLORS, fonts (+CJK), console font
     ├── install-waydroid.sh          Android container (LXC) + all container-side fixes
+    ├── firstboot-grow.sh            First-boot growpart + resize2fs (local.d hook)
     ├── debug-waydroid.sh            Capture logcat + dmesg + manager log + state timeline
     ├── analyse-waydroid.sh          Summarise a debug-waydroid capture
     ├── start-weston.sh              Start Weston on card0 (dev mode, via seatd)
@@ -257,6 +258,27 @@ Wiring: `PI5 -> USB-TTL RX`, `PI6 -> USB-TTL TX`, `GND -> GND`, **VCC left uncon
 | `images/`, `work/`, `build/` | Vendor base image and kernel source tree |
 | `ssh.txt` | **Contains plaintext credentials** |
 | `debian12/` | Vendor build-tool copy, re-obtainable from GitHub |
+
+## How the v0.20 image is assembled
+
+The Android images (2.3 GB) are **not** part of the base image — the release build
+stays ~2.7 GB and the container is materialised on the board, so Android can be
+upgraded without republishing the whole file.
+
+| Stage | What happens |
+|---|---|
+| build `[3b]` | `config.txt` keeps its `extraargs` and gains `psi=1` (lmkd needs PSI; `CONFIG_PSI_DEFAULT_DISABLED=y` is kept on purpose) |
+| build `[5c]` | Weston / seatd / libinput / touch / fonts (as in v0.19) |
+| build `[5d]` | `install-waydroid.sh --no-images` in the chroot: packages, OpenRC service, the six container fixes, boot hook, plus `waydroid-setup` / `debug-waydroid` / `analyse-waydroid` in `/usr/local/sbin` |
+| first boot | `/etc/local.d/alpindroid-firstboot.start` runs `growpart` + `resize2fs` once (marker `/etc/.alpindroid-grown`) |
+| first boot | `waydroid-setup` downloads the Android images (~1.1 GB) and initialises the container |
+| each session | `start-weston.sh -b`, then `dbus-run-session -- sh -c 'waydroid session start &'`, then `waydroid show-full-ui` |
+
+Autostart is deliberately **not** enabled yet: v0.20 becomes the release candidate
+only after the Android desktop, touch inside Android and GLES-through-Panfrost are
+verified on hardware.
+
+---
 
 ## Roadmap
 

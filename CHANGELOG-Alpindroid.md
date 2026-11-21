@@ -706,3 +706,45 @@ the host `dmesg` stream, not from the console.
 not a release image: Android's UI has only just been launched, touch and GLES
 inside Android are unverified, audio is silent (no PulseAudio on the host), IPv6
 is missing inside the container, and the container is not started at boot yet.
+
+### 15.9 How the release image is assembled (small base, Android on first boot)
+
+The 2.3 GB of Android images do **not** go into the base image. A release build
+ships a ~2.7 GB image and the container is materialised on the board, so Android
+can be upgraded later without republishing the whole file.
+
+`scripts/build-alpindroid.sh` now organises it like this:
+
+| Step | What it does |
+|---|---|
+| `[3b]` | `config.txt`: keeps the existing `extraargs` and appends `psi=1` (idempotent); aborts the build if `psi=1` is missing. Everything else (uart2, printk 7, overlays + `pmic-axp313a`) is unchanged. |
+| `[5c]` | Weston/seatd/libinput/touch/fonts (unchanged from v0.19). |
+| `[5d]` | `install-waydroid.sh --no-images` inside the chroot: waydroid + lxc + OpenRC service, the six container fixes, the boot hook. Also installs `cloud-utils-growpart` + `e2fsprogs-extra`, drops `firstboot-grow.sh` into `/etc/local.d/alpindroid-firstboot.start`, and copies `waydroid-setup`, `debug-waydroid`, `analyse-waydroid` into `/usr/local/sbin`. |
+| `[6/6]` | 8 new checks: `waydroid`, its OpenRC service, `lxc-start`, `waydroid-setup`, the first-boot hook, `growpart`, `resize2fs`, and `extraargs` containing `psi=1`. 36 checks total now. |
+
+First boot on a freshly flashed card:
+
+```sh
+# happens automatically (OpenRC local service, no reboot needed):
+#   /etc/local.d/alpindroid-firstboot.start -> growpart + resize2fs
+#   marker: /etc/.alpindroid-grown, log: /var/log/alpindroid-firstboot.log
+
+# then, once, on the board (needs network; a proxy speeds it up a lot):
+waydroid-setup                # = install-waydroid.sh: packages already there,
+                              #   this downloads VANILLA system + MAINLINE vendor
+                              #   (~1.1 GB) and initialises the container
+
+# afterwards, per session (auto-start deliberately still disabled):
+sh /home/alpine/.../start-weston.sh -b     # or wherever the scripts live
+dbus-run-session -- sh -c 'waydroid session start &'
+sleep 20 && waydroid show-full-ui
+```
+
+Kernel stays as validated: `DMABUF_HEAPS{,_SYSTEM,_CMA}=y`, BinderFS, Panfrost,
+cgroup2 — and `CONFIG_PSI_DEFAULT_DISABLED=y` is deliberately kept, with
+`psi=1` in the boot args instead of another 25-minute rebuild.
+
+Not enabled yet, by design: Waydroid autostart. `v0.20` becomes the release
+candidate only after three things are verified on hardware — the Android desktop
+is visible on HDMI, touch inside Android works, and GLES renders through
+Panfrost from inside the container.

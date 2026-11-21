@@ -110,6 +110,20 @@ echo "  修改后:"
 grep -E '^(overlays|console_uart|printk_level)=' "$CFG" | sed 's/^/    /'
 grep -q 'pmic-axp313a' "$CFG" || die "config.txt 的 overlays 仍缺 pmic-axp313a"
 
+# PSI：Android 的 lmkd 是 critical 服务，没有压力信息就退出，init 连续 4 次后
+# 触发 InitFatalReboot（signal 6），容器随之退出。内核已编 CONFIG_PSI=y，但仍保留
+# CONFIG_PSI_DEFAULT_DISABLED=y，所以必须靠启动参数打开 —— 保留原有 extraargs 内容，
+# 仅追加 psi=1。
+if grep -qE '^extraargs=.*psi=1' "$CFG"; then
+    echo "  extraargs 已含 psi=1"
+elif grep -qE '^extraargs=' "$CFG"; then
+    sed -i 's/^extraargs=\(.*\)/extraargs=\1 psi=1/' "$CFG"
+else
+    echo 'extraargs=psi=1' >> "$CFG"
+fi
+grep -E '^extraargs=' "$CFG" | sed 's/^/    /'
+grep -qE '^extraargs=.*psi=1' "$CFG" || die "config.txt 的 extraargs 缺 psi=1（Android 的 lmkd 会不停退出）"
+
 # ---------------------------------------------------------------- 4. 模块
 say "[4/6] 安装内核模块（版本目录层级是关键）"
 sh "$SCRIPTDIR/replace-modules.sh" "$ROOTMNTP" "$NEWMODS" || die "replace-modules.sh 失败"
@@ -236,6 +250,45 @@ else
     echo "  WARN 缺少 qemu-aarch64-static，跳过 Wayland 栈与终端美化"
 fi
 
+say "[5d] 安装 Waydroid（软件包 + 容器配置；Android 镜像留到首次启动下载）"
+# 2.3 GB 的 Android system/vendor 镜像不放进基础镜像：保持小体积，首次启动后
+# 由用户在板子上跑 /usr/local/sbin/waydroid-setup 下载并初始化。
+# 这里只固化软件包、OpenRC 服务、LXC/udev 修复、以及首次启动扩容逻辑。
+if [ -x /usr/bin/qemu-aarch64-static ]; then
+    cp /usr/bin/qemu-aarch64-static "$ROOTMNTP/usr/bin/" 2>/dev/null
+    mount -t proc proc "$ROOTMNTP/proc" 2>/dev/null
+    mount -t sysfs sys "$ROOTMNTP/sys" 2>/dev/null
+    mount -t devtmpfs dev "$ROOTMNTP/dev" 2>/dev/null
+    cp /etc/resolv.conf "$ROOTMNTP/etc/resolv.conf" 2>/dev/null
+    REPO_DIR=$(cd "$SCRIPTDIR/.." && pwd)
+    for f in install-waydroid.sh firstboot-grow.sh; do
+        cp "$SCRIPTDIR/$f" "$ROOTMNTP/tmp/"
+        chmod 0755 "$ROOTMNTP/tmp/$f"
+    done
+    if chroot "$ROOTMNTP" /bin/sh -c 'sh /tmp/install-waydroid.sh --no-images'; then
+        echo "  OK   Waydroid 软件包与容器配置已安装"
+    else
+        echo "  WARN Waydroid 安装失败（可在首次启动后手动执行 waydroid-setup）"
+    fi
+    # 首次启动自动扩容所需的工具（firstboot-grow.sh 依赖它们）
+    chroot "$ROOTMNTP" /bin/sh -c 'apk add --no-cache cloud-utils-growpart e2fsprogs-extra' >/dev/null 2>&1 || true
+    chroot "$ROOTMNTP" /bin/sh -c 'apk add --no-cache sfdisk || apk add --no-cache util-linux-misc' >/dev/null 2>&1 || true
+    # 首次启动扩容钩子（local 服务在 boot runlevel 已由 install-wayland-stack.sh 注册）
+    install -m 0755 "$SCRIPTDIR/firstboot-grow.sh" "$ROOTMNTP/etc/local.d/alpindroid-firstboot.start" 2>/dev/null || true
+    # 把安装脚本固化到镜像里，供用户首次启动后调用
+    install -d "$ROOTMNTP/usr/local/sbin" 2>/dev/null || true
+    install -m 0755 "$SCRIPTDIR/install-waydroid.sh" "$ROOTMNTP/usr/local/sbin/waydroid-setup" 2>/dev/null || true
+    install -m 0755 "$SCRIPTDIR/debug-waydroid.sh" "$ROOTMNTP/usr/local/sbin/debug-waydroid" 2>/dev/null || true
+    install -m 0755 "$SCRIPTDIR/analyse-waydroid.sh" "$ROOTMNTP/usr/local/sbin/analyse-waydroid" 2>/dev/null || true
+    rm -f "$ROOTMNTP/tmp/install-waydroid.sh" "$ROOTMNTP/tmp/firstboot-grow.sh"
+    umount "$ROOTMNTP/dev"  2>/dev/null
+    umount "$ROOTMNTP/sys"  2>/dev/null
+    umount "$ROOTMNTP/proc" 2>/dev/null
+    rm -f "$ROOTMNTP/usr/bin/qemu-aarch64-static"
+else
+    echo "  WARN 缺少 qemu-aarch64-static，跳过 Waydroid 安装"
+fi
+
 say "[6/6] 最终校验"
 
 fail=0
@@ -290,6 +343,16 @@ chk "开机重生成触摸绑定（local.d）"      test -x "$ROOTMNTP/etc/local
 chk "彩色终端 profile"                   test -f "$ROOTMNTP/etc/profile.d/alpindroid-color.sh"
 chk "字体已安装"                         sh -c "ls -A '$ROOTMNTP/usr/share/fonts' 2>/dev/null | grep -q ."
 chk "fontconfig 规则（monospace/CJK）"   test -f "$ROOTMNTP/etc/fonts/local.conf"
+
+# v0.20：Android 容器（软件包与配置固化，镜像本身首次启动下载）
+chk "waydroid 已安装"                    test -x "$ROOTMNTP/usr/bin/waydroid"
+chk "waydroid OpenRC 服务"               test -f "$ROOTMNTP/etc/init.d/waydroid-container"
+chk "lxc 已安装"                         test -x "$ROOTMNTP/usr/bin/lxc-start"
+chk "waydroid-setup 已固化"              test -x "$ROOTMNTP/usr/local/sbin/waydroid-setup"
+chk "首次启动扩容钩子"                   test -x "$ROOTMNTP/etc/local.d/alpindroid-firstboot.start"
+chk "growpart 已预装"                    test -x "$ROOTMNTP/usr/bin/growpart"
+chk "resize2fs 已预装"                   sh -c "ls '$ROOTMNTP'/*bin/resize2fs 2>/dev/null | grep -q resize2fs"
+chk "config.txt extraargs 含 psi=1"      grep -qE '^extraargs=.*psi=1' "$CFG"
 chk "eglinfo 存在" test -x "$ROOTMNTP/usr/bin/eglinfo"
 chk "cgroup2 已写入 fstab" grep -q cgroup2 "$ROOTMNTP/etc/fstab"
 

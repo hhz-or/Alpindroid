@@ -43,12 +43,14 @@ set -u
 DESKTOP_USER="${DESKTOP_USER:-alpine}"
 REINIT=0
 STATUS_ONLY=0
+NO_IMAGES=0
 SYSTEM_TYPE="${SYSTEM_TYPE:-VANILLA}"
 
 for a in "$@"; do
     case "$a" in
         --reinit) REINIT=1 ;;
         --status) STATUS_ONLY=1 ;;
+        --no-images) NO_IMAGES=1 ;;
         -h|--help) sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) printf 'unknown option: %s\n' "$a" >&2; exit 1 ;;
     esac
@@ -120,6 +122,10 @@ if [ "$REINIT" = "1" ] && [ -d /var/lib/waydroid/images ]; then
 fi
 if [ -f /var/lib/waydroid/images/system.img ] && [ -f /var/lib/waydroid/images/vendor.img ]; then
     echo "  images present: $(du -sh /var/lib/waydroid/images | cut -f1)"
+elif [ "$NO_IMAGES" = "1" ]; then
+    echo "  --no-images: skipping the download (image build / offline setup)"
+    echo "  run this script again without --no-images on first boot, or:"
+    echo "    https_proxy=... waydroid init -s $SYSTEM_TYPE"
 else
     echo "  downloading (needs network; in CN a proxy helps a lot):"
     echo "    https_proxy=... waydroid init -s $SYSTEM_TYPE"
