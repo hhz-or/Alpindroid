@@ -279,6 +279,9 @@ if [ -x /usr/bin/qemu-aarch64-static ]; then
     install -d "$ROOTMNTP/usr/local/sbin" 2>/dev/null || true
     install -m 0755 "$SCRIPTDIR/install-waydroid.sh" "$ROOTMNTP/usr/local/sbin/waydroid-setup" 2>/dev/null || true
     install -m 0755 "$SCRIPTDIR/debug-waydroid.sh" "$ROOTMNTP/usr/local/sbin/debug-waydroid" 2>/dev/null || true
+    install -m 0755 "$SCRIPTDIR/install-alpindroid-autostart.sh" "$ROOTMNTP/usr/local/sbin/alpindroid-autostart-setup" 2>/dev/null || true
+    install -m 0755 "$SCRIPTDIR/start-weston.sh" "$ROOTMNTP/usr/local/sbin/start-weston" 2>/dev/null || true
+    install -m 0755 "$SCRIPTDIR/wayland-check.sh" "$ROOTMNTP/usr/local/sbin/wayland-check" 2>/dev/null || true
     install -m 0755 "$SCRIPTDIR/analyse-waydroid.sh" "$ROOTMNTP/usr/local/sbin/analyse-waydroid" 2>/dev/null || true
     rm -f "$ROOTMNTP/tmp/install-waydroid.sh" "$ROOTMNTP/tmp/firstboot-grow.sh"
     umount "$ROOTMNTP/dev"  2>/dev/null
@@ -348,7 +351,8 @@ TMPL="$ROOTMNTP/usr/lib/waydroid/data/configs"
 if [ ! -f "$ANDROID_DIR/system.img" ] || [ ! -f "$ANDROID_DIR/vendor.img" ]; then
     echo "  WARN 缺少 $ANDROID_DIR/{system,vendor}.img，镜像将不含 Android"
 else
-    install -d "$IMGDIR" "$LXCDIR" "$ROOTMNTP/var/lib/waydroid/host-permissions"                "$ROOTMNTP/var/lib/waydroid/metadata"
+    install -d "$IMGDIR" "$LXCDIR" "$ROOTMNTP/var/lib/waydroid/host-permissions" \
+               "$ROOTMNTP/var/lib/waydroid/metadata" "$ROOTMNTP/var/lib/waydroid/rootfs"
     echo "  复制 Android 镜像（$(du -sh "$ANDROID_DIR" | cut -f1)）"
     cp -f "$ANDROID_DIR/system.img" "$IMGDIR/system.img"
     cp -f "$ANDROID_DIR/vendor.img" "$IMGDIR/vendor.img"
@@ -418,6 +422,27 @@ ro.hardware.vulkan=panfrost
 ro.hardware.camera=v4l2
 ro.opengles.version=196610
 WPROP
+
+    # waydroid_base.prop 是 session start 的硬性要求（否则报
+    # "waydroid_base.prop Not found"）；内容与 lxc.make_base_props() 在这块
+    # 板子上的输出一致。
+    cat > "$ROOTMNTP/var/lib/waydroid/waydroid_base.prop" <<'WBASE'
+sys.use_memfd=true
+ro.adb.secure=1
+ro.debuggable=0
+gralloc.gbm.device=/dev/dri/renderD128
+debug.stagefright.ccodec=0
+ro.hardware.gralloc=gbm
+ro.hardware.egl=mesa
+ro.hardware.vulkan=panfrost
+ro.hardware.camera=v4l2
+ro.opengles.version=196610
+waydroid.system_ota=https://ota.waydro.id/system/lineage/waydroid_arm64/VANILLA.json
+waydroid.vendor_ota=https://ota.waydro.id/vendor/waydroid_arm64/MAINLINE.json
+waydroid.tools_version=1.6.0
+ro.vndk.lite=true
+ro.product.waydroid.model=walnutpi-1b
+WBASE
 
     echo "  OK   Android 镜像与配置已内置"
 fi

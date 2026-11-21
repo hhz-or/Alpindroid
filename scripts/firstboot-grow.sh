@@ -27,14 +27,26 @@ log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG"; }
 [ -f "$MARK" ] && exit 0
 
 # --- identify the device backing /
+# /proc/mounts reports "/dev/root" on Alpine and that path usually does not
+# exist, so resolve it through root=PARTUUID=<uuid> from the kernel cmdline.
 ROOT_SRC=$(awk '$2 == "/" { print $1; exit }' /proc/mounts)
-case "$ROOT_SRC" in
-    /dev/*) ;;
-    *) log "root source is not a block device ($ROOT_SRC); nothing to grow"; : > "$MARK"; exit 0 ;;
-esac
+REAL_ROOT=""
+if [ -b "$ROOT_SRC" ]; then
+    REAL_ROOT=$(readlink -f "$ROOT_SRC" 2>/dev/null)
+fi
+if [ -z "$REAL_ROOT" ] || [ ! -b "$REAL_ROOT" ]; then
+    PARTUUID=$(sed -n 's/.*root=PARTUUID=\([^ ]*\).*/\1/p' /proc/cmdline | head -n1)
+    if [ -n "$PARTUUID" ] && [ -e "/dev/disk/by-partuuid/$PARTUUID" ]; then
+        REAL_ROOT=$(readlink -f "/dev/disk/by-partuuid/$PARTUUID" 2>/dev/null)
+    fi
+fi
+if [ -z "$REAL_ROOT" ] || [ ! -b "$REAL_ROOT" ]; then
+    log "cannot resolve the root block device (mounts=$ROOT_SRC cmdline=$(cat /proc/cmdline))"
+    exit 1
+fi
+log "root device resolved to $REAL_ROOT"
 
-# /dev/mmcblk1p2 -> disk /dev/mmcblk1, partition 2
-PART_NAME=$(basename "$ROOT_SRC")
+PART_NAME=$(basename "$REAL_ROOT")
 case "$PART_NAME" in
     *p[0-9]*) DISK_NAME=${PART_NAME%p[0-9]*}; PART_NUM=${PART_NAME##*p} ;;
     *[0-9])   DISK_NAME=${PART_NAME%[0-9]}; PART_NUM=${PART_NAME##*[!0-9]} ;;
@@ -68,7 +80,7 @@ if ! growpart "$DISK" "$PART_NUM" >> "$LOG" 2>&1; then
     exit 0
 fi
 
-if ! resize2fs "$ROOT_SRC" >> "$LOG" 2>&1; then
+if ! resize2fs "$REAL_ROOT" >> "$LOG" 2>&1; then
     log "resize2fs failed; partition table was already changed"
     exit 0
 fi
