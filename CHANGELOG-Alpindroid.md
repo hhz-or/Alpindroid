@@ -543,3 +543,97 @@ Baking it into the image (`scripts/build-alpindroid.sh`):
   local.d boot hook, the colour profile and the fonts), so the builder now runs
   28 checks and still aborts on any failure;
 * v0.18 is untouched: everything above lives in the user-space layer.
+
+---
+
+## 15. v0.20 bring-up — Waydroid (in progress)
+
+Goal: Android (LineageOS 20 "VANILLA") in an LXC container on top of the v0.19
+graphics stack. Everything below is measured on the board.
+
+### 15.1 Disk
+
+The stock image ships a 2.4 GB root partition inside a 119 GB card, and the
+Android images need ~2.3 GB. Grown online, no reboot:
+
+```sh
+apk add cloud-utils-growpart e2fsprogs-extra
+sfdisk -d /dev/mmcblk1 > /root/partition-backup.sfdisk
+growpart /dev/mmcblk1 2      # 5363712 -> 249442271 sectors
+resize2fs /dev/mmcblk1p2     # 2.4 G -> 117 G
+```
+
+### 15.2 Kernel: DMABUF_HEAPS is mandatory
+
+The v0.18/v0.19 kernel (vendor defconfig) has `# CONFIG_DMABUF_HEAPS is not
+set`, so `/dev/dma_heap` does not exist. Without it Android's allocator HAL
+starts and immediately fails:
+
+```
+E android.hardware.graphics.allocator@4.0-service.minigbm_gbm_mesa:
+    Unsupported combination -- pixel format: RGBA_FP16, drm format:DRM_FOURCC_AB4H ...
+E GraphicBufferAllocator: Failed to allocate (128 x 128) layerCount 1 format 22 usage 100: 7
+E Gralloc4: AIDL IAllocator declared but failed to get service
+```
+
+Fix (`kernel/config/config-6.1.31-plus`, compiled on the build host):
+
+```
+CONFIG_DMABUF_HEAPS=y
+CONFIG_DMABUF_HEAPS_SYSTEM=y
+CONFIG_DMABUF_HEAPS_CMA=y
+CONFIG_PSI=y                 # silences libpsi / lmkd warnings
+```
+
+After flashing the rebuilt Image + modules: `uname -r` = `6.1.31` (the upstream
+build sets `LOCALVERSION=` and touches `.scmversion`, so the `+` suffix is gone;
+`/lib/modules/6.1.31` is the new path) and `/dev/dma_heap/{system,reserved}`
+appear. With that, the allocator works — measured inside the container:
+
+```
+Allocated: 1024x568, stride: 4096        (the panel-sized buffer)
+init.svc.vendor.graphics.allocator-4-0: running
+init.svc.vendor.hwcomposer-2-1:         running
+surfaceflinger:                          running
+```
+
+### 15.3 Container-side defects, all needed before Android stays up
+
+| # | Symptom | Cause / fix |
+|---|---|---|
+| 1 | `lxc-start: Failed to mount "/run/user/1000/pulse/native"` → container aborts | Waydroid's generated LXC config bind-mounts a PulseAudio socket; a bare Alpine rootfs has none. Create an empty placeholder file (and recreate it on boot). |
+| 2 | `init: createProcessGroup(NNN, ...) failed: Read-only file system`, `statsd`/`lmkd` die | `lxc.mount.auto = cgroup:ro`; Android must create per-uid cgroups → switch to `cgroup:mixed`. |
+| 3 | `Gralloc4: ... failed to get service` even with DMABUF_HEAPS | Waydroid's LXC node list predates dma-buf heaps → add `lxc.mount.entry = /dev/dma_heap dev/dma_heap none bind,create=dir,optional 0 0`. |
+| 4 | `bootstat: Failed to read /metadata/...` | Android 12+ needs a metadata mount → `/var/lib/waydroid/metadata` + bind mount. |
+| 5 | `Failed to attach "vethXXX" to bridge "waydroid0"` | The bridge is only created by `waydroid-net.sh`; `rc-service waydroid-container restart` tears it down. Run `waydroid-net.sh start` right before the session, or do not restart the daemon. |
+| 6 | `Unable to autolaunch a dbus-daemon without a $DISPLAY for X11` | The session needs a session bus: `dbus-run-session -- waydroid session start`. |
+
+All six are applied by `scripts/install-waydroid.sh` (idempotent) and re-applied
+at boot from `/etc/local.d/alpindroid-waydroid.start`.
+
+### 15.4 Images
+
+`waydroid init -s VANILLA` works but is unusably slow without a proxy
+(DNS for github.com fails on the board, sourceforge direct ~60 KB/s). Through
+the Windows LAN proxy it pulled over the OTA channel at ~2-3 MB/s:
+
+```
+system: lineage-20.0-20260927-VANILLA-waydroid_arm64-system.zip   912 MB -> 1.9 GB img
+vendor: lineage-20.0-20261022-MAINLINE-waydroid_arm64-vendor.zip  148 MB -> 402 MB img
+/var/lib/waydroid/images: 2.3 GB total
+```
+
+### 15.5 Current state (open)
+
+Session reaches `RUNNING`, Android boots through `zygote`, `SystemServer`,
+`SurfaceFlinger`, `hwcomposer` and the graphics allocator allocate real buffers
+(1024x568), but the container still terminates ~30-40 s after start and
+`waydroid status` then shows `Container: STOPPED`. Remaining work: capture the
+container's init/console output until the reboot reason is visible (LXC console
+capture is currently empty, `lxc-attach` + `logcat` snapshots lose the last
+seconds), then decide between a `HALIUM_13` vendor image and a metadata
+initialisation fix.
+
+Known limitations carried forward: no PulseAudio (Android audio silent), IPv6
+not configured inside the container (kernel lacks the ip6tables tables), and the
+container is not started automatically at boot yet.
