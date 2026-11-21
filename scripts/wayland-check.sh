@@ -14,6 +14,9 @@
 #   sh wayland-check.sh              # static checks only
 #   sh wayland-check.sh --client     # also run weston-simple-egl for 4 s
 #   sh wayland-check.sh --dmabuf     # also run weston-simple-dmabuf-egl
+#   sh wayland-check.sh --touch      # live touch capture (stop weston first:
+#                                    #   pkill -x weston) -- touch the screen
+#   sh wayland-check.sh --touch=15   # same, 15 s window
 #
 # Exit code: 0 = all checks passed, 1 = at least one failure.
 # ============================================================================
@@ -24,11 +27,15 @@ DRM_CARD="${DRM_CARD:-card0}"
 OUTPUT_NAME="${OUTPUT_NAME:-HDMI-A-1}"
 RUN_CLIENT=0
 RUN_DMABUF=0
+RUN_TOUCH=0
+TOUCH_SECS=6
 
 for arg in "$@"; do
     case "$arg" in
         --client) RUN_CLIENT=1 ;;
         --dmabuf) RUN_DMABUF=1 ;;
+        --touch) RUN_TOUCH=1 ;;
+        --touch=*) RUN_TOUCH=1; TOUCH_SECS="${arg#--touch=}" ;;
         -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) printf 'unknown option: %s\n' "$arg" >&2; exit 1 ;;
     esac
@@ -175,6 +182,34 @@ if [ "$RUN_DMABUF" -eq 1 ]; then
             bad "weston-simple-dmabuf-egl reported an error"
         else
             ok "weston-simple-dmabuf-egl ran without error"
+        fi
+    fi
+fi
+
+if [ "$RUN_TOUCH" -eq 1 ]; then
+    head2 "7. Touch events (live capture, ${TOUCH_SECS}s)"
+    node=""
+    for e in /sys/class/input/event*; do
+        if [ "$(cat "$e/device/properties" 2>/dev/null)" = "2" ]; then
+            node="/dev/input/$(basename "$e")"
+        fi
+    done
+    if [ -z "$node" ]; then
+        bad "no touchscreen node (properties=2) found"
+    elif pgrep -x weston >/dev/null 2>&1; then
+        info "weston is running and owns the device (libinput grab)"
+        info "  -> for a live capture: pkill -x weston, then re-run with --touch"
+        info "  -> for a visual check: run weston-simple-touch on the desktop"
+    elif [ ! -r "$node" ]; then
+        info "$node is not readable by $(id -un); re-run with sudo for the live capture"
+    else
+        printf '  TOUCH THE SCREEN NOW (%ss) ...\n' "$TOUCH_SECS"
+        bytes=$(timeout "$TOUCH_SECS" dd if="$node" bs=24 count=2000 2>/dev/null | wc -c)
+        bytes=${bytes:-0}
+        if [ "$bytes" -gt 0 ]; then
+            ok "touch events received: ${bytes} bytes ($((bytes / 24)) events) from $node"
+        else
+            bad "no touch events from $node within ${TOUCH_SECS}s"
         fi
     fi
 fi

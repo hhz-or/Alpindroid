@@ -163,6 +163,10 @@ sh scripts/start-weston.sh -b
 
 # acceptance: HDMI output, GL renderer (not llvmpipe), touch binding, dmabuf
 sh scripts/wayland-check.sh --client --dmabuf
+
+# live touch capture (stops nothing by itself: kill weston first, then touch)
+pkill -x weston
+sh scripts/wayland-check.sh --touch=15
 ```
 
 Measured on the ZeroW:
@@ -182,14 +186,13 @@ Status: **development mode only** — Weston is started by hand over SSH/TTY. No
 autostart service is installed yet, so a crashing compositor cannot lock you out
 of the board. v0.18 stays frozen; all of this lives in the user-space layer.
 
-> **Touch is wired but silent — and the vendor image behaves the same (open issue).**
-> The controller enumerates, exposes a standard MT-B touchscreen (`hid-multitouch`,
-> `INPUT_PROP_DIRECT`, 10 points, Report ID `0x15`), libinput binds it to `HDMI-A-1`
-> — and then no report ever arrives: evdev, `hidraw` and the HID core debug node all
-> stay empty, and the OHCI interrupt counter does not move. The same measurement on
-> the vendor Debian 12 server image (same board, same panel, same cable) also yields
-> nothing, so this is not a configuration difference — see `CHANGELOG-Alpindroid.md`
-> §14.6/§14.7. Pointer input (mouse) works.
+> **Touch is verified working.** The panel is a plain USB HID multi-touch device:
+> `hid-multitouch` binds it as an MT-B node (`INPUT_PROP_DIRECT`, 10 points,
+> Report ID `0x15`), libinput scales its 1920x1080 coordinate space onto the
+> 1024x600 head, and our udev rule pins it to `HDMI-A-1`. Measured: 6768 bytes /
+> 282 events from the `PROP=2` node, and the pointer follows the finger on the
+> Weston desktop. Details and the measurement pitfalls that once made this look
+> like a hardware fault are in `CHANGELOG-Alpindroid.md` §14.6/§14.7.
 
 ---
 

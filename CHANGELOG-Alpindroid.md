@@ -432,73 +432,76 @@ RESULT: PASS
 Not done yet: touch coordinate verification with a real finger (and
 `weston-touch-calibrator` if the panel needs a matrix), autostart service, and
 baking the stack into a v0.19 image. v0.18 remains the frozen baseline.
-### 14.6 Touch bring-up status (open)
+### 14.6 Touch bring-up (verified working)
 
-The touch controller initialises but never reports, and everything below is
-measured, not guessed:
+Every layer checks out and the panel reports real MT-B touch events:
 
 | Layer | Result |
 |---|---|
 | USB enumeration | OK — `222a:0001`, three HID interfaces, full-speed on the OHCI controller |
 | HID report descriptor | OK — `Usage Page Digitizer / Usage Touch Screen`, Report ID `0x15`, MT-B contacts, X 0..1920 / Y 0..1080 |
 | Driver binding | OK — `hid-multitouch` on interface 0, `INPUT_PROP_DIRECT`, 10 points |
-| udev + output binding | OK — `ID_INPUT_TOUCHSCREEN=1`, `WL_OUTPUT=HDMI-A-1` (our rule is picked up: `associating input device event3 with output HDMI-A-1 (HDMI-A-1 by udev)`) |
-| evdev (`/dev/input/eventN`) | **no events** |
-| HID core (`/sys/kernel/debug/hid/*/events`) | **no events** |
-| raw reports (`/dev/hidraw0/1/2`) | **no data** |
-| OHCI interrupt counter while touching | **unchanged** |
-| Vendor kernel config (extracted from the image) | identical for `CONFIG_HID_MULTITOUCH`, `CONFIG_TOUCHSCREEN_USB_COMPOSITE`, `CONFIG_HID_GENERIC`, `CONFIG_USB_HID` |
-| Board DTB vs vendor DTB | identical for all USB/PHY nodes (only phandle renumbering from our added `prcm_ppu`) |
-| Vendor rootfs | no device-specific udev rule or libinput quirk (full-image scan for `222a:0001` / `Multi-Touch-V5000` / `OpenWare` = 0 hits); only generic `xorg` + `xserver-xorg-input-evdev` |
+| udev + output binding | OK — `ID_INPUT_TOUCHSCREEN=1`, `WL_OUTPUT=HDMI-A-1`; Weston logs `associating input device event1 with output HDMI-A-1 (HDMI-A-1 by udev)` |
+| evdev events | **OK — 6768 bytes / 282 events** captured from the `PROP=2` node |
+| Weston desktop | **OK — the pointer follows the finger, coordinates land under the finger, `weston-terminal` is usable** |
 
-Observations worth keeping:
-
-* cold boot logs `usb 5-1: reset full-speed USB device number 2 using ohci-platform`
-  ~6 s *after* `hid-multitouch` binds, and nothing re-probes afterwards;
-* enumeration always goes `hid-generic` first, then `hid-multitouch` rebinds
-  interface 0 a few seconds later;
-* forcing a re-enumeration (`authorized 0 → 1`) or `unbind/bind` re-creates the
-  device and the input nodes, but still no reports.
-
-Consequence for this repository: `install-wayland-stack.sh` deliberately does
-**not** add `hid_multitouch` to `/etc/modules` any more (that defers the load and
-forces the rebind, which the vendor image never does). `scripts/touch-diag.sh`
-prints the whole chain above and, with `--live`, whether raw events arrive at
-all — it runs unchanged on the vendor Debian 12 image so the two can be compared.
-
-### 14.7 Vendor A/B on the same board, same panel, same cable
-
-Flashed the vendor `2026-5-20_V2.6.0_WalnutPi-1B_6.1.31_debian12_server.img`
-(kernel `6.1.31 #98`, SSH `pi@`, no desktop at all — no Xorg, no
-display-manager) and measured the same way:
+Decoded sample (24-byte `input_event` records):
 
 ```
-[ 2.920209] hid-generic 0003:222A:0001.0001: input,hidraw0 ... input0
-[ 2.985138] hid-generic 0003:222A:0001.0002: input,hidraw1 ... Keyboard
-[ 2.990922] hid-generic 0003:222A:0001.0003: input,hidraw2 ... Mouse
-[ 5.500304] hid-multitouch 0003:222A:0001.0001: input,hidraw0 ... input0
-[13.300939] usb 7-1: reset full-speed USB device number 2 using ohci-platform
+EV_ABS ABS_MT_SLOT       = 0
+EV_ABS ABS_MT_POSITION_X = 693
+EV_ABS ABS_MT_POSITION_Y = 433
+EV_KEY BTN_TOUCH         = 1        (finger down)
+EV_ABS ABS_X             = 693
+EV_ABS ABS_Y             = 433
+EV_SYN SYN_REPORT        = 0
 ```
 
-So the vendor image shows the *same* `hid-generic` → `hid-multitouch` rebind and
-the *same* `usb reset` a few seconds later — both are normal for this device and
-were wrongly suspected earlier.
+The panel reports in a 1920x1080 coordinate space while the head runs 1024x600;
+libinput scales it automatically and the measured result needs no calibration
+matrix.
 
-Touching the panel on the vendor image produces nothing either:
+Normal behaviour worth knowing (all of it was wrongly suspected at first):
 
-| Probe on the vendor image | Result |
+* enumeration goes `hid-generic` first, then `hid-multitouch` rebinds interface 0
+  a few seconds later;
+* cold boot logs `usb 5-1: reset full-speed USB device number 2 using
+  ohci-platform` about 6 s after that rebind — the vendor image shows the exact
+  same sequence, so neither is a defect;
+* unplugging the touch USB cable makes `222a:0001` disappear from `lsusb`
+  completely, which proves the enumerated device really is this panel's
+  controller.
+
+`install-wayland-stack.sh` deliberately does **not** add `hid_multitouch` to
+`/etc/modules`: udev autoloads it from the USB modalias at enumeration time, and
+deferring the load to the `modules` service only forces an extra rebind.
+
+### 14.7 A false negative, and why it happened
+
+Earlier rounds concluded "no touch events on either OS". That was wrong: the
+fault was in the measurement, not in the hardware.
+
+| Mistake | Effect |
 |---|---|
-| `dd if=/dev/input/event0` (node with `PROP=2`) | blocks, 0 bytes |
-| `ohci_hcd:usb7` interrupt counter | 110 → 110 |
-| `/sys/kernel/debug/hid` | not available in that kernel config |
+| `dd if=/dev/input/eventN bs=24 count=1 \| od -An -tx1 > /tmp/log` | `od` buffers its output (4 KB); a few touches produce a few hundred bytes, so the file stayed at 0 bytes and looked like "no events" |
+| sampling windows that did not overlap the actual touches | the capture had already timed out, or was started after the finger was lifted |
+| treating the `ohci_hcd` interrupt counter as the primary signal | an idle interrupt endpoint NAKs without raising the host-controller interrupt count, so "no interrupt" does not prove "no touch" |
 
-**Conclusion:** the controller does not report on either OS. This is not an
-Alpindroid configuration problem — kernel config, board DTB and rootfs were
-compared, and the runtime behaviour matches the vendor image. The remaining
-candidates are on the panel/controller side: touch FPC seating, the controller's
-power rail, or firmware initialisation that only the vendor tooling performs
-(the published `walnutpi-build` has no touch handling beyond generic
-`xorg` + `xserver-xorg-input-evdev`).
+The fix, now used in `scripts/touch-diag.sh --live` and
+`scripts/wayland-check.sh --touch`:
 
-Touch is therefore **not** part of the v0.19 acceptance yet: HDMI output, GPU
-rendering and pointer input work, the touchscreen path is wired but silent.
+```sh
+# unbuffered: the file size grows the moment a report arrives
+dd if=/dev/input/eventN of=/tmp/cap.raw bs=24 count=2000
+```
+
+With that, the same panel produced 6768 bytes on the first attempt — on both
+Alpindroid and the vendor image.
+
+Two notes from the vendor A/B run:
+
+* the vendor `debian12_server` image has no desktop at all (no Xorg, no
+  display-manager, no `xinput`), so "touch works on the vendor image" is not
+  reproducible there as-is;
+* the vendor image shows the same `hid-generic` -> `hid-multitouch` rebind and
+  the same `usb reset`; both are normal for this controller.
