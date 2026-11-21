@@ -34,3 +34,6 @@ desktop.ini
 .DS_Store
 # 工具状态目录（非项目内容）
 .reasonix/
+
+# setup-kernel.sh 生成的源码树
+build/

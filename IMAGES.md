@@ -1,22 +1,23 @@
-# 镜像清单
+# Image manifest
 
-镜像文件体积 2.7 GB，不入版本库。此文件记录 SHA256 供校验与版本追溯。
+Image files are ~2.7 GB each and are **not** stored in this repository.
+This file records their checksums for verification and version tracking.
 
-## 当前稳定基线
+## Current stable baseline
 
-| 版本 | SHA256 | 说明 |
+| Version | SHA256 | Notes |
 |---|---|---|
-| **v0.18** | `79a83716919a6fa12fa516727f9cd9ef425953d9de0d2b5e4a5377dc197abbb5` | **当前最新**：GPU 完整可用 + Mesa 固化 + cgroup2，稳定性测试全通过 |
-| v0.17 | `03e9647446ded3d888b6a6e8e458314b258c5e34538cb71baf0a20c7190967c6` | resume 修复，GPU 真实渲染首次通过 |
-| v0.16 | `536c81782d9402afe3283bbb5d7cc1d4cf43132c9edcd6beb6812bb5077f3856` | 修复 `/lib/modules` 层级，WiFi 恢复 |
-| v0.10 | `f27f18e4cf6c7f07...` | **长期稳定基线**（原厂内核，GPU 禁用，WiFi/调频/HDMI 全通），已云端归档 |
-| v0.7 | — | **长期稳定基线**，全部核心功能正常 |
+| **v0.18** | `79a83716919a6fa12fa516727f9cd9ef425953d9de0d2b5e4a5377dc197abbb5` | **Latest**: GPU fully working, Mesa preinstalled, cgroup2 auto-mounted. All stability tests passed |
+| v0.17 | `03e9647446ded3d888b6a6e8e458314b258c5e34538cb71baf0a20c7190967c6` | First version with working GPU rendering (resume fix) |
+| v0.16 | `536c81782d9402afe3283bbb5d7cc1d4cf43132c9edcd6beb6812bb5077f3856` | Fixed `/lib/modules` layout; WiFi restored |
+| v0.10 | `f27f18e4cf6c7f07…` | **Long-term baseline** (vendor kernel, GPU disabled, WiFi/cpufreq/HDMI all working). Archived to cloud storage |
+| v0.7 | — | **Long-term baseline**, all core features working |
 
-## 历史版本（仅编译机保留）
+## Historical versions
 
-`~/alpindroid/output/` 下保留 v0.1 ~ v0.18 共 20 个镜像，约 54 GB。
+20 images (v0.1 through v0.18) are kept on the build host under `~/alpindroid/output/`, about 54 GB total.
 
-## 校验方法
+## Verifying
 
 ```powershell
 # Windows
@@ -28,16 +29,21 @@ Get-FileHash output\Alpindroid-ZeroW-v0.18.img -Algorithm SHA256
 sha256sum Alpindroid-ZeroW-v0.18.img
 ```
 
-## 烧录
+## Flashing
 
-用 balenaEtcher / Rufus / dd 写入 SD 卡（≥16 GB）。
+Use balenaEtcher, Rufus, or `dd` to write to an SD card (16 GB or larger).
 
-**首次启动后建议扩容**：
+**Expand the root partition after the first boot** — the image ships with a 2.4 GB rootfs
+and the card is usually much larger:
 
 ```sh
 apk add cloud-utils-growpart e2fsprogs-extra
-sfdisk -d /dev/mmcblk1 > /root/partition-backup.sfdisk
+sfdisk -d /dev/mmcblk1 > /root/partition-backup.sfdisk   # back up the partition table first
 growpart /dev/mmcblk1 2
 resize2fs /dev/mmcblk1p2
 df -h /
 ```
+
+Measured result on a 128 GB card: 2.4 GB -> 117 GB usable.
+
+> **Note**: `resize2fs` lives in `e2fsprogs-extra` on Alpine, not in `e2fsprogs`.

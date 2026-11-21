@@ -1,0 +1,543 @@
+diff --git a/arch/arm64/boot/dts/allwinner/sun50i-h616-walnutpi-1b.dts b/arch/arm64/boot/dts/allwinner/sun50i-h616-walnutpi-1b.dts
+index 0819d4d6a..0b7010598 100755
+--- a/arch/arm64/boot/dts/allwinner/sun50i-h616-walnutpi-1b.dts
++++ b/arch/arm64/boot/dts/allwinner/sun50i-h616-walnutpi-1b.dts
+@@ -221,7 +221,12 @@ &de {
+ };
+ 
+ &hdmi {
+-	hvcc-supply = <&reg_bldo1>;
++	/* Alpindroid: AXP313A 没有 bldo1（那是 AXP806 的），原厂靠 DT overlay
++	 * 用硬编码 phandle 0x22 兜底；但重编 DTB 后 phandle 漂移会指错 regulator
++	 * （实测指到了 vcc33-wifi，导致 HDMI 抢占 WiFi 的 3.3V 供电）。
++	 * 这里直接用 label 指向 vcc-wifi-io，overlay 里对应 fragment 已删除。
++	 */
++	hvcc-supply = <&reg_vcc_wifi_io>;
+ 	status = "okay";
+ };
+ 
+@@ -237,9 +242,13 @@ hdmi_out_con: endpoint {
+ 
+ /* USB 2 & 3 are on headers only. */
+ &gpu {
+-    mali-supply = <&reg_dcdc3>;
+-	operating-points-v2 = <&gpu_opp_table>;
+-        status = "okay";
++	/* Alpindroid: dcdc1 = vdd-gpu-sys（GPU 与 SYS 共用）；
++	 * 厂商原来误接到 dcdc3 (vdd-dram, 固定 1.3V)。
++	 */
++	mali-supply = <&reg_dcdc1>;
++	operating-points-v2 = <&gpu_opp_fixed>;
++	power-domains = <&prcm_ppu 2>;
++	status = "okay";
+ };
+ 
+ &ehci0 {
+@@ -341,7 +350,7 @@ reg_dcdc2: dcdc2 {
+ 			
+ 			reg_dcdc1: dcdc1 {
+ 				regulator-always-on;
+-				regulator-min-microvolt = <810000>;
++				regulator-min-microvolt = <900000>;
+ 				regulator-max-microvolt = <1160000>;
+ 				regulator-name = "vdd-gpu-sys";
+ 			};
+@@ -488,3 +497,17 @@ &ahub1_plat {
+ &ahub1_mach {
+ 	status = "okay";
+ };
++
++/* Alpindroid: 单档 GPU OPP —— 固定 432MHz @ 0.9V。
++ * dcdc1 (vdd-gpu-sys) 与 SYS 共用，压低会拖垮系统，所以不做 DVFS。
++ */
++&{/} {
++	gpu_opp_fixed: gpu-opp-fixed {
++		compatible = "operating-points-v2";
++
++		opp-432000000 {
++			opp-hz = /bits/ 64 <432000000>;
++			opp-microvolt = <900000>;
++		};
++	};
++};
+diff --git a/arch/arm64/boot/dts/allwinner/sun50i-h616.dtsi b/arch/arm64/boot/dts/allwinner/sun50i-h616.dtsi
+index 720517bbc..355a4e4c9 100755
+--- a/arch/arm64/boot/dts/allwinner/sun50i-h616.dtsi
++++ b/arch/arm64/boot/dts/allwinner/sun50i-h616.dtsi
+@@ -1317,6 +1317,12 @@ r_ccu: clock@7010000 {
+ 			#reset-cells = <1>;
+ 		};
+ 
++		prcm_ppu: power-controller@7010250 {
++			compatible = "allwinner,sun50i-h616-prcm-ppu";
++			reg = <0x07010250 0x10>;
++			#power-domain-cells = <1>;
++		};
++
+ 		r_pio: pinctrl@7022000 {
+ 			compatible = "allwinner,sun50i-h616-r-pinctrl";
+ 			reg = <0x07022000 0x400>;
+diff --git a/arch/arm64/configs/walnutpi1b_defconfig b/arch/arm64/configs/walnutpi1b_defconfig
+index 8288f30d6..bd86772e0 100644
+--- a/arch/arm64/configs/walnutpi1b_defconfig
++++ b/arch/arm64/configs/walnutpi1b_defconfig
+@@ -8440,3 +8440,4 @@ CONFIG_ARCH_USE_MEMTEST=y
+ #
+ # end of Rust hacking
+ # end of Kernel hacking
++CONFIG_SUN50I_H6_PRCM_PPU=y
+diff --git a/drivers/gpu/drm/panfrost/panfrost_devfreq.c b/drivers/gpu/drm/panfrost/panfrost_devfreq.c
+index fe5f12f16..f71fa39f9 100644
+--- a/drivers/gpu/drm/panfrost/panfrost_devfreq.c
++++ b/drivers/gpu/drm/panfrost/panfrost_devfreq.c
+@@ -92,6 +92,35 @@ int panfrost_devfreq_init(struct panfrost_device *pfdev)
+ 	struct thermal_cooling_device *cooling;
+ 	struct panfrost_devfreq *pfdevfreq = &pfdev->pfdevfreq;
+ 
++	/*
++	 * Alpindroid: disable GPU DVFS on this vendor tree.
++	 *
++	 * Vendor 6.1.31 does not backport the H616 GPU PLL reparent fix
++	 * (CVE-2025-38041, upstream commit eb963d79 "clk: sunxi-ng: h616:
++	 * Reparent GPU clock during frequency changes"). On this SoC any
++	 * clk_set_rate() on the GPU clock hangs the hardware.
++	 *
++	 * Measured on WalnutPi ZeroW: the last message before the hang is
++	 *   panfrost 1800000.gpu: bus_clock rate = 432000000
++	 * which is printed at the end of panfrost_clk_init(); the very next
++	 * step is this function's dev_pm_opp_set_opp() -> clk_set_rate().
++	 *
++	 * The only place in the driver that changes the GPU clock is the
++	 * dev_pm_opp_set_opp() call below, so skip devfreq entirely and let
++	 * the GPU run at the fixed rate programmed by the bootloader
++	 * (observed: core 432 MHz, bus 200 MHz).
++	 *
++	 * panfrost_clk_init() and panfrost_regulator_init() remain safe:
++	 * they only read the rate and enable clock/regulator, they never
++	 * change frequency or voltage.
++	 *
++	 * Consequence: pfdevfreq->opp_of_table_added stays false, so
++	 * panfrost_device_init() still calls panfrost_regulator_init() to
++	 * enable mali-supply (dcdc1). No devfreq / cooling device appears.
++	 * Re-enable this once the PLL reparent fix is backported.
++	 */
++	return 0;
++
+ 	if (pfdev->comp->num_supplies > 1) {
+ 		/*
+ 		 * GPUs with more than 1 supply require platform-specific handling:
+diff --git a/drivers/gpu/drm/panfrost/panfrost_device.c b/drivers/gpu/drm/panfrost/panfrost_device.c
+index ee612303f..2e44ada42 100644
+--- a/drivers/gpu/drm/panfrost/panfrost_device.c
++++ b/drivers/gpu/drm/panfrost/panfrost_device.c
+@@ -206,12 +206,44 @@ int panfrost_device_init(struct panfrost_device *pfdev)
+ 
+ 	spin_lock_init(&pfdev->as_lock);
+ 
++	/*
++	 * Alpindroid: align init order with mainline
++	 * (pm_domain -> reset -> clk -> devfreq).
++	 *
++	 * Vendor 6.1.31 used: clk -> devfreq -> regulator -> reset -> pm_domain.
++	 * That means panfrost_devfreq_init() calls dev_pm_opp_set_opp() ->
++	 * clk_set_rate() while the GPU is still held in reset and its power
++	 * domain is not yet enabled, which hangs the hardware.
++	 *
++	 * Observed on WalnutPi ZeroW (H618 + Mali-G31):
++	 *   - when OPPs are rejected, devfreq_init returns -ERANGE early and the
++	 *     system boots fine;
++	 *   - when OPPs register successfully, execution reaches set_opp() and
++	 *     the board hangs hard (udev coldplug stall, then network dead).
++	 *
++	 * Mainline master reorders to pm_domain -> reset -> clk -> devfreq,
++	 * which corresponds to the upstream 2025 fix for H616 Mali runtime PM.
++	 */
++	pr_info("Alpindroid-STEP: pm_domain_init\n");
++	err = panfrost_pm_domain_init(pfdev);
++	if (err)
++		return err;
++
++	pr_info("Alpindroid-STEP: reset_init\n");
++	err = panfrost_reset_init(pfdev);
++	if (err) {
++		dev_err(pfdev->dev, "reset init failed %d\n", err);
++		goto out_pm_domain;
++	}
++
++	pr_info("Alpindroid-STEP: clk_init\n");
+ 	err = panfrost_clk_init(pfdev);
+ 	if (err) {
+ 		dev_err(pfdev->dev, "clk init failed %d\n", err);
+-		return err;
++		goto out_reset;
+ 	}
+ 
++	pr_info("Alpindroid-STEP: devfreq_init\n");
+ 	err = panfrost_devfreq_init(pfdev);
+ 	if (err) {
+ 		if (err != -EPROBE_DEFER)
+@@ -221,39 +253,35 @@ int panfrost_device_init(struct panfrost_device *pfdev)
+ 
+ 	/* OPP will handle regulators */
+ 	if (!pfdev->pfdevfreq.opp_of_table_added) {
++	pr_info("Alpindroid-STEP: regulator_init\n");
+ 		err = panfrost_regulator_init(pfdev);
+ 		if (err)
+ 			goto out_devfreq;
+ 	}
+ 
+-	err = panfrost_reset_init(pfdev);
+-	if (err) {
+-		dev_err(pfdev->dev, "reset init failed %d\n", err);
+-		goto out_regulator;
+-	}
+-
+-	err = panfrost_pm_domain_init(pfdev);
+-	if (err)
+-		goto out_reset;
+-
++	pr_info("Alpindroid-STEP: ioremap\n");
+ 	pfdev->iomem = devm_platform_ioremap_resource(pfdev->pdev, 0);
+ 	if (IS_ERR(pfdev->iomem)) {
+ 		err = PTR_ERR(pfdev->iomem);
+-		goto out_pm_domain;
++		goto out_regulator;
+ 	}
+ 
++	pr_info("Alpindroid-STEP: gpu_init\n");
+ 	err = panfrost_gpu_init(pfdev);
+ 	if (err)
+ 		goto out_pm_domain;
+ 
++	pr_info("Alpindroid-STEP: mmu_init\n");
+ 	err = panfrost_mmu_init(pfdev);
+ 	if (err)
+ 		goto out_gpu;
+ 
++	pr_info("Alpindroid-STEP: job_init\n");
+ 	err = panfrost_job_init(pfdev);
+ 	if (err)
+ 		goto out_mmu;
+ 
++	pr_info("Alpindroid-STEP: perfcnt_init\n");
+ 	err = panfrost_perfcnt_init(pfdev);
+ 	if (err)
+ 		goto out_job;
+@@ -265,16 +293,16 @@ int panfrost_device_init(struct panfrost_device *pfdev)
+ 	panfrost_mmu_fini(pfdev);
+ out_gpu:
+ 	panfrost_gpu_fini(pfdev);
+-out_pm_domain:
+-	panfrost_pm_domain_fini(pfdev);
+-out_reset:
+-	panfrost_reset_fini(pfdev);
+ out_regulator:
+ 	panfrost_regulator_fini(pfdev);
+ out_devfreq:
+ 	panfrost_devfreq_fini(pfdev);
+ out_clk:
+ 	panfrost_clk_fini(pfdev);
++out_reset:
++	panfrost_reset_fini(pfdev);
++out_pm_domain:
++	panfrost_pm_domain_fini(pfdev);
+ 	return err;
+ }
+ 
+@@ -404,6 +432,38 @@ void panfrost_device_reset(struct panfrost_device *pfdev)
+ int panfrost_device_resume(struct device *dev)
+ {
+ 	struct panfrost_device *pfdev = dev_get_drvdata(dev);
++	int ret;
++
++	/*
++	 * Alpindroid: 对齐主线 panfrost_device_runtime_resume()。
++	 * 厂商版本原先只调用 panfrost_device_reset()，既没有解除 GPU 复位，
++	 * 也没有重新使能时钟。而 suspend 时 GPU 电源域已被关闭，
++	 * genpd 不会替本设备恢复复位/时钟，于是 resume 后第一次访问 GPU
++	 * 寄存器就在「复位中 + 无时钟」状态下锁死总线——
++	 * 实测表现为硬挂死（串口连 printk 都打不出来，需断电重启）。
++	 */
++	ret = reset_control_deassert(pfdev->rstc);
++	if (ret) {
++		dev_err(pfdev->dev, "resume: deassert reset failed %d\n", ret);
++		return ret;
++	}
++
++	ret = clk_prepare_enable(pfdev->clock);
++	if (ret) {
++		dev_err(pfdev->dev, "resume: enable core clock failed %d\n", ret);
++		reset_control_assert(pfdev->rstc);
++		return ret;
++	}
++
++	if (pfdev->bus_clock) {
++		ret = clk_prepare_enable(pfdev->bus_clock);
++		if (ret) {
++			dev_err(pfdev->dev, "resume: enable bus clock failed %d\n", ret);
++			clk_disable_unprepare(pfdev->clock);
++			reset_control_assert(pfdev->rstc);
++			return ret;
++		}
++	}
+ 
+ 	panfrost_device_reset(pfdev);
+ 	panfrost_devfreq_resume(pfdev);
+@@ -421,6 +481,15 @@ int panfrost_device_suspend(struct device *dev)
+ 	panfrost_devfreq_suspend(pfdev);
+ 	panfrost_gpu_power_off(pfdev);
+ 
++	/*
++	 * Alpindroid: 与 resume 对称——关闭时钟并断言复位，
++	 * 避免 GPU 停在「时钟开着但电源域已关」的中间态被访问。
++	 */
++	if (pfdev->bus_clock)
++		clk_disable_unprepare(pfdev->bus_clock);
++	clk_disable_unprepare(pfdev->clock);
++	reset_control_assert(pfdev->rstc);
++
+ 	return 0;
+ }
+ #endif
+diff --git a/drivers/soc/sunxi/Kconfig b/drivers/soc/sunxi/Kconfig
+index 8aecbc9b1..7fd217911 100644
+--- a/drivers/soc/sunxi/Kconfig
++++ b/drivers/soc/sunxi/Kconfig
+@@ -19,3 +19,13 @@ config SUNXI_SRAM
+ 	  Say y here to enable the SRAM controller support. This
+ 	  device is responsible on mapping the SRAM in the sunXi SoCs
+ 	  whether to the CPU/DMA, or to the devices.
++
++config SUN50I_H6_PRCM_PPU
++	tristate "Allwinner H6/H616 PRCM power domain driver"
++	depends on ARCH_SUNXI || COMPILE_TEST
++	depends on PM
++	select PM_GENERIC_DOMAINS
++	help
++	  Say y to enable the Allwinner H6/H616 PRCM power domain driver.
++	  This is required to enable the Mali GPU in the H616 SoC, it is
++	  optional for the H6.
+diff --git a/drivers/soc/sunxi/Makefile b/drivers/soc/sunxi/Makefile
+index 549159571..d6db2d616 100644
+--- a/drivers/soc/sunxi/Makefile
++++ b/drivers/soc/sunxi/Makefile
+@@ -1,3 +1,4 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ obj-$(CONFIG_SUNXI_MBUS) +=	sunxi_mbus.o
+ obj-$(CONFIG_SUNXI_SRAM) +=	sunxi_sram.o
++obj-$(CONFIG_SUN50I_H6_PRCM_PPU) += sun50i-h6-prcm-ppu.o
+diff --git a/drivers/soc/sunxi/sun50i-h6-prcm-ppu.c b/drivers/soc/sunxi/sun50i-h6-prcm-ppu.c
+new file mode 100644
+index 000000000..9df996993
+--- /dev/null
++++ b/drivers/soc/sunxi/sun50i-h6-prcm-ppu.c
+@@ -0,0 +1,209 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) Arm Ltd. 2024
++ *
++ * Allwinner H6/H616 PRCM power domain driver.
++ * This covers a few registers inside the PRCM (Power Reset Clock Management)
++ * block that control some power rails, most prominently for the Mali GPU.
++ */
++
++#include <linux/bitfield.h>
++#include <linux/clk.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_device.h>
++#include <linux/platform_device.h>
++#include <linux/pm_domain.h>
++#include <linux/reset.h>
++#include <linux/slab.h>
++
++/*
++ * The PRCM block covers multiple devices, starting with some clocks,
++ * then followed by the power rails.
++ * The clocks are covered by a different driver, so this driver's MMIO range
++ * starts later in the PRCM MMIO frame, not at the beginning of it.
++ * To keep the register offsets consistent with other PRCM documentation,
++ * express the registers relative to the beginning of the whole PRCM, and
++ * subtract the PPU offset this driver is bound to.
++ */
++#define PD_H6_PPU_OFFSET		0x250
++#define PD_H6_VDD_SYS_REG		0x250
++#define PD_H616_ANA_VDD_GATE			BIT(4)
++#define PD_H6_CPUS_VDD_GATE			BIT(3)
++#define PD_H6_AVCC_VDD_GATE			BIT(2)
++#define PD_H6_GPU_REG			0x254
++#define PD_H6_GPU_GATE				BIT(0)
++
++struct sun50i_h6_ppu_pd {
++	struct generic_pm_domain	genpd;
++	void __iomem			*reg;
++	u32				gate_mask;
++	bool				negated;
++};
++
++#define FLAG_PPU_ALWAYS_ON	BIT(0)
++#define FLAG_PPU_NEGATED	BIT(1)
++
++struct sun50i_h6_ppu_desc {
++	const char *name;
++	u32 offset;
++	u32 mask;
++	unsigned int flags;
++};
++
++static const struct sun50i_h6_ppu_desc sun50i_h6_ppus[] = {
++	{ "AVCC", PD_H6_VDD_SYS_REG, PD_H6_AVCC_VDD_GATE },
++	{ "CPUS", PD_H6_VDD_SYS_REG, PD_H6_CPUS_VDD_GATE },
++	{ "GPU", PD_H6_GPU_REG, PD_H6_GPU_GATE },
++};
++static const struct sun50i_h6_ppu_desc sun50i_h616_ppus[] = {
++	{ "PLL", PD_H6_VDD_SYS_REG, PD_H6_AVCC_VDD_GATE,
++		FLAG_PPU_ALWAYS_ON | FLAG_PPU_NEGATED },
++	{ "ANA", PD_H6_VDD_SYS_REG, PD_H616_ANA_VDD_GATE, FLAG_PPU_ALWAYS_ON },
++	{ "GPU", PD_H6_GPU_REG, PD_H6_GPU_GATE, FLAG_PPU_NEGATED },
++};
++
++struct sun50i_h6_ppu_data {
++	const struct sun50i_h6_ppu_desc *descs;
++	int nr_domains;
++};
++
++static const struct sun50i_h6_ppu_data sun50i_h6_ppu_data = {
++	.descs = sun50i_h6_ppus,
++	.nr_domains = ARRAY_SIZE(sun50i_h6_ppus),
++};
++
++static const struct sun50i_h6_ppu_data sun50i_h616_ppu_data = {
++	.descs = sun50i_h616_ppus,
++	.nr_domains = ARRAY_SIZE(sun50i_h616_ppus),
++};
++
++#define to_sun50i_h6_ppu_pd(_genpd) \
++	container_of(_genpd, struct sun50i_h6_ppu_pd, genpd)
++
++static bool sun50i_h6_ppu_power_status(const struct sun50i_h6_ppu_pd *pd)
++{
++	bool bit = readl(pd->reg) & pd->gate_mask;
++
++	return bit ^ pd->negated;
++}
++
++static int sun50i_h6_ppu_pd_set_power(const struct sun50i_h6_ppu_pd *pd,
++				      bool set_bit)
++{
++	u32 reg = readl(pd->reg);
++
++	if (set_bit)
++		writel(reg | pd->gate_mask, pd->reg);
++	else
++		writel(reg & ~pd->gate_mask, pd->reg);
++
++	return 0;
++}
++
++static int sun50i_h6_ppu_pd_power_on(struct generic_pm_domain *genpd)
++{
++	const struct sun50i_h6_ppu_pd *pd = to_sun50i_h6_ppu_pd(genpd);
++
++	return sun50i_h6_ppu_pd_set_power(pd, !pd->negated);
++}
++
++static int sun50i_h6_ppu_pd_power_off(struct generic_pm_domain *genpd)
++{
++	const struct sun50i_h6_ppu_pd *pd = to_sun50i_h6_ppu_pd(genpd);
++
++	return sun50i_h6_ppu_pd_set_power(pd, pd->negated);
++}
++
++static int sun50i_h6_ppu_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct genpd_onecell_data *ppu;
++	struct sun50i_h6_ppu_pd *pds;
++	const struct sun50i_h6_ppu_data *data;
++	void __iomem *base;
++	int ret, i;
++
++	data = of_device_get_match_data(dev);
++	if (!data)
++		return -EINVAL;
++
++	pds = devm_kcalloc(dev, data->nr_domains, sizeof(*pds), GFP_KERNEL);
++	if (!pds)
++		return -ENOMEM;
++
++	ppu = devm_kzalloc(dev, sizeof(*ppu), GFP_KERNEL);
++	if (!ppu)
++		return -ENOMEM;
++
++	ppu->num_domains = data->nr_domains;
++	ppu->domains = devm_kcalloc(dev, data->nr_domains, sizeof(*ppu->domains), GFP_KERNEL);
++	if (!ppu->domains)
++		return -ENOMEM;
++
++	platform_set_drvdata(pdev, ppu);
++
++	base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(base))
++		return PTR_ERR(base);
++
++	for (i = 0; i < data->nr_domains; i++) {
++		struct sun50i_h6_ppu_pd *pd = &pds[i];
++		const struct sun50i_h6_ppu_desc *desc = &data->descs[i];
++
++		pd->genpd.name		= desc->name;
++		pd->genpd.power_off	= sun50i_h6_ppu_pd_power_off;
++		pd->genpd.power_on	= sun50i_h6_ppu_pd_power_on;
++		if (desc->flags & FLAG_PPU_ALWAYS_ON)
++			pd->genpd.flags = GENPD_FLAG_ALWAYS_ON;
++		pd->negated		= !!(desc->flags & FLAG_PPU_NEGATED);
++		pd->reg			= base + desc->offset - PD_H6_PPU_OFFSET;
++		pd->gate_mask		= desc->mask;
++
++		ret = pm_genpd_init(&pd->genpd, NULL,
++				    !sun50i_h6_ppu_power_status(pd));
++		if (ret) {
++			dev_warn(dev, "Failed to add %s power domain: %d\n",
++				 desc->name, ret);
++			goto out_remove_pds;
++		}
++		ppu->domains[i] = &pd->genpd;
++	}
++
++	ret = of_genpd_add_provider_onecell(dev->of_node, ppu);
++	if (!ret)
++		return 0;
++
++	dev_warn(dev, "Failed to add provider: %d\n", ret);
++out_remove_pds:
++	for (i--; i >= 0; i--)
++		pm_genpd_remove(&pds[i].genpd);
++
++	return ret;
++}
++
++static const struct of_device_id sun50i_h6_ppu_of_match[] = {
++	{ .compatible	= "allwinner,sun50i-h6-prcm-ppu",
++	  .data		= &sun50i_h6_ppu_data },
++	{ .compatible	= "allwinner,sun50i-h616-prcm-ppu",
++	  .data		= &sun50i_h616_ppu_data },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, sun50i_h6_ppu_of_match);
++
++static struct platform_driver sun50i_h6_ppu_driver = {
++	.probe	= sun50i_h6_ppu_probe,
++	.driver	= {
++		.name			= "sun50i-h6-prcm-ppu",
++		.of_match_table		= sun50i_h6_ppu_of_match,
++		/* Power domains cannot be removed while they are in use. */
++		.suppress_bind_attrs	= true,
++	},
++};
++module_platform_driver(sun50i_h6_ppu_driver);
++
++MODULE_AUTHOR("Andre Przywara <andre.przywara@arm.com>");
++MODULE_DESCRIPTION("Allwinner H6 PRCM power domain driver");
++MODULE_LICENSE("GPL");

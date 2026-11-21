@@ -1,24 +1,25 @@
-# GPU（Mali-G31 / Panfrost）修复补丁集
+# GPU (Mali-G31 / Panfrost) patch set
 
-针对核桃派 WalnutPi ZeroW（H618 / H616 家族）厂商内核 6.1.31 的 GPU 支持修复。
+Fixes the GPU support in the WalnutPi ZeroW vendor kernel 6.1.31 (H618 / H616 family).
 
-## 问题现象
+## Symptom
 
-`modprobe panfrost` 后**无限挂死**，串口最后输出：
+`modprobe panfrost` hangs forever. The last serial output is:
 
 ```
 panfrost 1800000.gpu: clock rate = 432000000
 panfrost 1800000.gpu: bus_clock rate = 200000000
-（卡死，无任何错误）
+(hang — no error, no panic, no further output)
 ```
 
-## 根因（三个叠加问题）
+## Root causes — three defects stacked on top of each other
 
-### 1. 厂商删除了 PPU 驱动 —— 主因
+### 1. The vendor deleted the PPU driver (primary cause)
 
-H616 的 GPU 电源由 **PRCM PPU**（Power Processing Unit，`0x07010250`）控制，GPU 挂在 **domain 2**。
+On H616 the GPU is powered through the **PRCM PPU** (Power Processing Unit, `0x07010250`),
+with the GPU on **domain 2**.
 
-主线 Kconfig 原文明确写着：
+Mainline `Kconfig` states this explicitly:
 
 ```
 config SUN50I_H6_PRCM_PPU
@@ -28,54 +29,56 @@ config SUN50I_H6_PRCM_PPU
 	  optional for the H6.
 ```
 
-而厂商内核里：
+The vendor kernel has none of it:
 
-| 位置 | 状态 |
+| Location | State |
 |---|---|
-| `drivers/soc/sunxi/` | 只有 `sunxi_mbus.c` / `sunxi_sram.c`，**无 PPU 驱动** |
-| `walnutpi1b_defconfig` | **无任何 PPU 配置项** |
-| `sun50i-h616.dtsi` | **无 `prcm_ppu` 节点** |
-| GPU 节点 | **无 `power-domains`** |
+| `drivers/soc/sunxi/` | Only `sunxi_mbus.c` / `sunxi_sram.c` — **no PPU driver** |
+| `walnutpi1b_defconfig` | **No PPU config option** |
+| `sun50i-h616.dtsi` | **No `prcm_ppu` node** |
+| GPU node | **No `power-domains`** |
 
-→ GPU 电源域从未上电 → `panfrost_gpu_soft_reset()` 写复位命令后硬件无响应 → 无限轮询卡死。
+→ The GPU power domain is never powered on → `panfrost_gpu_soft_reset()` writes a
+reset command and polls forever for hardware that has no power → hang.
 
-### 2. 厂商把 `mali-supply` 接到了错误的 regulator
+### 2. `mali-supply` points at the wrong regulator
 
 ```dts
-/* 厂商原版（错误） */
+/* vendor (wrong) */
 &gpu { mali-supply = <&reg_dcdc3>; };
 
-reg_dcdc1: dcdc1 { regulator-name = "vdd-gpu-sys"; ... };  ← 真正的 GPU 电源
-reg_dcdc3: dcdc3 { regulator-name = "vdd-dram";            ← DRAM 电源
+reg_dcdc1: dcdc1 { regulator-name = "vdd-gpu-sys"; ... };  /* ← the real GPU rail */
+reg_dcdc3: dcdc3 { regulator-name = "vdd-dram";            /* DRAM rail */
                    regulator-min-microvolt = <1300000>;
-                   regulator-max-microvolt = <1300000>; }; ← 固定 1.3V
+                   regulator-max-microvolt = <1300000>; };  /* fixed 1.3 V */
 ```
 
-`dcdc3` 是固定 1.3 V 的 DRAM 供电，不是 GPU 供电。
+### 3. The DT overlay used a hardcoded phandle
 
-### 3. DT overlay 里硬编码 phandle
+The overlay wrote `mali-supply = <0x9e>`. Phandle numbers change on every DTB rebuild
+(observed: `0x9e` → `0x9f` → `0x0d` across three builds). When it drifts it points at an
+unrelated node, `devm_regulator_bulk_get()` fails, and the driver silently returns
+`-EPROBE_DEFER` — **with no error in the log at all**.
 
-原 overlay 写 `mali-supply = <0x9e>`。每次重新编译 DTB 后 phandle 编号都会变（实测 dcdc1 在三个版本里分别是 `0x9e` → `0x9f` → `0x0d`），一旦对不上就指向无关节点，`devm_regulator_bulk_get()` 失败并静默返回 `-EPROBE_DEFER`，**probe 日志里看不到任何错误**。
+## Fix
 
-## 修复内容
+### ① Apply the PPU driver
 
-### ① 应用 PPU 驱动
+`sun50i-h6-prcm-ppu-6.1.c` is the mainline `drivers/pmdomain/sunxi/sun50i-h6-prcm-ppu.c`
+(Arm Ltd. 2024, GPL-2.0) adapted to 6.1. Four changes:
 
-`sun50i-h6-prcm-ppu-6.1.c` 是主线 `drivers/pmdomain/sunxi/sun50i-h6-prcm-ppu.c`（Arm Ltd. 2024, GPL-2.0）的 6.1 适配版，改动 4 处：
-
-| 主线写法（6.10+） | 6.1 写法 |
+| Mainline (6.10+) | 6.1 equivalent |
 |---|---|
 | `devm_kzalloc_objs(dev, *pds, n)` | `devm_kcalloc(dev, n, sizeof(*pds), GFP_KERNEL)` |
 | `devm_kzalloc_obj(dev, *ppu)` | `devm_kzalloc(dev, sizeof(*ppu), GFP_KERNEL)` |
 | `devm_kzalloc_objs(dev, *ppu->domains, n)` | `devm_kcalloc(dev, n, sizeof(*ppu->domains), GFP_KERNEL)` |
-| 缺 include | 补 `#include <linux/of_device.h>`、`<linux/slab.h>` |
+| missing includes | add `<linux/of_device.h>`, `<linux/slab.h>` |
 
-放置到 `drivers/soc/sunxi/`：
+Install into `drivers/soc/sunxi/`:
 
 ```bash
 cp sun50i-h6-prcm-ppu-6.1.c  drivers/soc/sunxi/sun50i-h6-prcm-ppu.c
 
-# Kconfig 追加
 cat >> drivers/soc/sunxi/Kconfig <<'EOF'
 
 config SUN50I_H6_PRCM_PPU
@@ -89,66 +92,125 @@ config SUN50I_H6_PRCM_PPU
 	  optional for the H6.
 EOF
 
-# Makefile 追加
 echo 'obj-$(CONFIG_SUN50I_H6_PRCM_PPU) += sun50i-h6-prcm-ppu.o' >> drivers/soc/sunxi/Makefile
 
-# 启用配置
 ./scripts/config --enable SUN50I_H6_PRCM_PPU
 make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
 ```
 
-依赖已满足：`CONFIG_PM_GENERIC_DOMAINS=y`、`CONFIG_PM_GENERIC_DOMAINS_OF=y`。
+Requirements already satisfied: `CONFIG_PM_GENERIC_DOMAINS=y`, `CONFIG_PM_GENERIC_DOMAINS_OF=y`.
 
-### ② 应用 DTS 补丁
+> **Note:** the full patch set (`../alpindroid-kernel.patch`) does all of the above in one go —
+> `scripts/setup-kernel.sh` applies it automatically.
+
+### ② Apply the DTS patches
 
 ```bash
 cd <kernel>
-patch -p1 < dtsi-prcm-ppu.patch        # 加 prcm_ppu 节点
-patch -p1 < board-dts-gpu-fix.patch    # 修 GPU 供电 + 单档 OPP
+patch -p1 < dtsi-prcm-ppu.patch        # adds the prcm_ppu node
+patch -p1 < board-dts-gpu-fix.patch    # GPU rail + single OPP + power-domains
 make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- allwinner/sun50i-h616-walnutpi-1b.dtb
 ```
 
-### ③ overlay 必须移除 GPU 相关 fragment
+### ③ Remove GPU fragments from the overlay
 
-原 `patches/dts/pmic-axp313a.dts` 的 `fragment@9`（定义 `gpu_opp_fixed`）和 `fragment@10`（设置 `mali-supply` / `operating-points-v2`）**必须删掉**，否则硬编码 phandle 会覆盖板级 dts 的正确设置。
+`fragment@9` (defined `gpu_opp_fixed`) and `fragment@10` (`mali-supply` /
+`operating-points-v2`) **must be removed** from `patches/dts/pmic-axp313a.dts` —
+their hardcoded phandles would otherwise override the correct board-DTS settings.
 
-现 overlay 保留 9 个 fragment：PMIC（compatible/dcdc2/dcdc1/dcdc3）、thermal（cpu/gpu/polling/临界温度）、HDMI（hvcc-supply）。
+The remaining 8 fragments cover: PMIC (`compatible` / `dcdc2` / `dcdc1` / `dcdc3`),
+thermal (cpu/gpu/polling/critical temperature), HDMI (`hvcc-supply`).
 
-### ④ 移除 panfrost 黑名单
+### ④ Remove the panfrost blacklist
 
 ```bash
 rm -f /etc/modprobe.d/blacklist-panfrost.conf
 ```
 
-## 设计取舍
+### ⑤ Fix `resume` — the fourth defect
 
-- **单档 OPP（432 MHz @ 0.9 V）而非 DVFS**：`dcdc1` 是 `vdd-gpu-sys`，与 SYS 共用。若启用多档 OPP，Panfrost 会按低频档要求 810 mV，把 SYS 电压一起压低导致系统不稳（v0.4 实测 VGPU 0.9→0.8 V 后无法启动）。因此固定 0.9 V 单档，先保证稳定，DVFS 留待后续单独攻关（涉及 CVE-2025-38041 的 PLL reparent 补丁回移）。
-- **用 label 而非 phandle**：所有跨节点引用一律 `&reg_dcdc1` / `&prcm_ppu`，避免重编译后 phandle 漂移。
+Probing works, the DRM device registers, and idle operation is fine — but **any actual
+use of the GPU hard-hangs the bus** (no printk at all, requires a power cycle).
 
-## 验证方法
+Comparing against mainline `panfrost_device_runtime_resume()` shows why:
+
+```c
+/* mainline */
+if (pfdev->comp->pm_features & BIT(GPU_PM_RT)) {
+    ret = reset_control_deassert(pfdev->rstc);   /* ① release reset */
+    ret = panfrost_clks_enable(pfdev, true);     /* ② re-enable clocks */
+}
+panfrost_device_reset(pfdev, true);
+panfrost_devfreq_resume(pfdev);
+
+/* vendor — ①② both missing */
+panfrost_device_reset(pfdev);      /* touches registers while in reset / clockless */
+panfrost_devfreq_resume(pfdev);
+```
+
+`pm_features` / `GPU_PM_RT` do not exist in this tree, but the vendor calls
+`pm_runtime_enable()` unconditionally, so the runtime-PM path is live and the
+missing steps apply.
+
+Fix (`panfrost-resume-fix.patch`, or run `fix_panfrost_pmrt.py`):
+
+```c
+int panfrost_device_resume(struct device *dev)
+{
+    int ret;
+    ret = reset_control_deassert(pfdev->rstc);
+    if (ret) return ret;
+
+    ret = clk_prepare_enable(pfdev->clock);
+    if (ret) { reset_control_assert(pfdev->rstc); return ret; }
+
+    if (pfdev->bus_clock) {
+        ret = clk_prepare_enable(pfdev->bus_clock);
+        if (ret) {
+            clk_disable_unprepare(pfdev->clock);
+            reset_control_assert(pfdev->rstc);
+            return ret;
+        }
+    }
+
+    panfrost_device_reset(pfdev);
+    panfrost_devfreq_resume(pfdev);
+    return 0;
+}
+```
+
+Make `suspend` symmetric (`clk_disable_unprepare` x2 + `reset_control_assert`).
+
+## Design trade-offs
+
+- **Single OPP (432 MHz @ 0.9 V) instead of DVFS.** `dcdc1` is `vdd-gpu-sys`, shared with
+  the system rail. A multi-point OPP table makes Panfrost request 810 mV at the lowest
+  frequency, which browns out the board (measured in v0.4: VGPU 0.9 → 0.8 V, no boot).
+  Lifting this needs the PLL reparent backport for CVE-2025-38041.
+- **Labels instead of phandles.** Every cross-node reference uses `&reg_dcdc1` /
+  `&prcm_ppu`. Never `0x..`.
+
+## Verification
 
 ```bash
-# 1. PPU 驱动绑定
+# 1. PPU driver bound
 ls -l /sys/bus/platform/devices/7010250.power-controller/driver
 #   → sun50i-h6-prcm-ppu
 
-# 2. genpd 域（应有 PLL / ANA / GPU）
+# 2. genpd domains present (expect PLL / ANA / GPU)
 cat /sys/kernel/debug/pm_genpd/pm_genpd_summary | grep -i gpu
 
-# 3. GPU 设备
+# 3. GPU devices
 ls -l /dev/dri/
-#   → card0(HDMI) card1(panfrost) renderD128(panfrost)
+#   → card0 (HDMI) card1 (panfrost) renderD128 (panfrost)
 
-# 4. 驱动绑定
-cat /sys/class/drm/card1/device/driver/../uevent | head -3
-
-# 5. 硬件识别
+# 4. Hardware identified
 dmesg | grep -E "mali-g31|Initialized panfrost"
 #   → panfrost 1800000.gpu: mali-g31 id 0x7093 major 0x0 minor 0x0 status 0x0
 #   → [drm] Initialized panfrost 1.2.0 20180908 for 1800000.gpu on minor 1
 ```
 
-## 实测结果
+## Measured results
 
 ```
 /dev/dri:
@@ -156,21 +218,29 @@ dmesg | grep -E "mali-g31|Initialized panfrost"
   card1        panfrost
   renderD128   panfrost
 
-开机 5.97 秒自动加载：
+Auto-loads 5.97 s after boot:
   panfrost 1800000.gpu: mali-g31 id 0x7093 major 0x0 minor 0x0 status 0x0
   panfrost 1800000.gpu: Features: L2:0x07100206 Tiler:0x00000209 MMU:0x00002821 AS:0xff JS:0x7
   panfrost 1800000.gpu: shader_present=0x1 l2_present=0x1
   [drm] Initialized panfrost 1.2.0 20180908 for 1800000.gpu on minor 1
 
-runtime PM 正常：
+Runtime PM works:
   /devices/platform/soc/1800000.gpu   suspended
+
+Rendering (scripts/gpu_render_test.c):
+  GL_RENDERER   : Mali-G31 (Panfrost)
+  GL_VERSION    : OpenGL ES 3.1 Mesa 25.2.7
+  PIXEL center  : R=0 G=255 B=0 A=255
+  RESULT        : PASS
 ```
 
-## 文件清单
+## Files
 
-| 文件 | 说明 |
+| File | Description |
 |---|---|
-| `sun50i-h6-prcm-ppu-6.1.c` | PPU 驱动 6.1 适配版（可直接替换进 `drivers/soc/sunxi/`） |
-| `sun50i-h6-prcm-ppu.c` | 主线原始版本（参考用，未改动） |
-| `dtsi-prcm-ppu.patch` | `sun50i-h616.dtsi` 增加 `prcm_ppu` 节点 |
-| `board-dts-gpu-fix.patch` | 板级 dts：`mali-supply` → dcdc1、单档 OPP、`power-domains` |
+| `../../kernel/alpindroid-kernel.patch` | **Complete kernel diff** — includes all of the above; this is the recommended way |
+| `sun50i-h6-prcm-ppu-6.1.c` | Standalone PPU driver, 6.1-adapted |
+| `dtsi-prcm-ppu.patch` | Adds the `prcm_ppu` node to `sun50i-h616.dtsi` |
+| `board-dts-gpu-fix.patch` | Board DTS: GPU rail, single OPP, `power-domains` |
+| `../panfrost-resume-fix.patch` | The `resume` fix |
+| `../fix_panfrost_pmrt.py` | Applies the `resume` fix idempotently |
