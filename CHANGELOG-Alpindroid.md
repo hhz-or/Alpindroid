@@ -637,3 +637,72 @@ initialisation fix.
 Known limitations carried forward: no PulseAudio (Android audio silent), IPv6
 not configured inside the container (kernel lacks the ip6tables tables), and the
 container is not started automatically at boot yet.
+
+### 15.6 Root cause of the 30-40 s container exit: lmkd without PSI
+
+The capture from `scripts/debug-waydroid.sh` nailed it in the kernel stream:
+
+```
+[ 1636.311193] init: critical process 'lmkd' exited 4 times before boot completed
+[ 1636.323541] init: InitFatalReboot: signal 6
+```
+
+`lmkd` (Android's low-memory killer) is registered as a **critical** service.
+Without pressure information it bails out immediately:
+
+```
+E lowmemorykiller: Kernel does not support memory pressure events or in-kernel low memory killer
+I lowmemorykiller: exiting
+E libpsi: No kernel psi monitor support (errno=2)
+```
+
+Android's init then counts four exits and calls `InitFatalReboot` with SIGABRT —
+inside a container that is a plain exit, so LXC reports the container stopped and
+`waydroid status` flips back to `Container: STOPPED` ~30-40 s after start.
+
+The kernel had `CONFIG_PSI=y` since 15.2, but also `CONFIG_PSI_DEFAULT_DISABLED=y`,
+so `/proc/pressure/*` stays empty unless the kernel is told to enable it:
+
+```
+# /boot/config.txt
+extraargs=psi=1
+```
+
+After a reboot:
+
+```
+$ cat /proc/pressure/cpu
+some avg10=1.51 avg60=1.01 avg300=0.41 total=1755437
+full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+```
+
+and the container now stays up (measured over 115 s and counting):
+
+```
+Session:	RUNNING
+Container:	RUNNING
+Vendor type:	MAINLINE
+IP address:	192.168.240.112        <- Android's own DHCP lease on waydroid0
+Session user:	alpine(1000)
+Wayland display:	wayland-0
+```
+
+`waydroid show-full-ui` was then started from the session's own bus.
+
+### 15.7 Debug tooling (kept in the repo)
+
+| Script | Purpose |
+|---|---|
+| `scripts/debug-waydroid.sh [seconds]` | Captures four streams at once into `/root/waydroid-debug-<stamp>/`: Android `logcat` (via `lxc-attach`, so no session bus needed), a rolling host `dmesg` window, `/var/lib/waydroid/waydroid.log`, and a timestamped `lxc-info` state timeline. Leaves the container untouched. |
+| `scripts/analyse-waydroid.sh [dir]` | Prints the state timeline, then greps for shutdown/reboot requests, critical-service crashes, OOM, and graphics/cgroup complaints, followed by the tail of each stream. |
+
+Note: an empty `lxc.console.logfile` proves nothing — Android logs through logd
+and `/dev/kmsg`, not through the LXC console. The lmkd evidence above came from
+the host `dmesg` stream, not from the console.
+
+### 15.8 Version bookkeeping
+
+`v0.20-debug` marks the state where the container finally stays up. It is still
+not a release image: Android's UI has only just been launched, touch and GLES
+inside Android are unverified, audio is silent (no PulseAudio on the host), IPv6
+is missing inside the container, and the container is not started at boot yet.

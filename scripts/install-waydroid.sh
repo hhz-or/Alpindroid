@@ -97,6 +97,18 @@ if [ ! -d /dev/dma_heap ]; then
 else
     echo "  /dev/dma_heap: $(ls /dev/dma_heap | tr '\n' ' ')"
 fi
+# Android's lmkd is a *critical* process: without pressure information it exits
+# immediately, init counts 4 exits and calls InitFatalReboot, which tears the
+# whole container down ~30-40 s after start. CONFIG_PSI=y is compiled in, but
+# CONFIG_PSI_DEFAULT_DISABLED=y keeps it off unless the kernel gets `psi=1`:
+#   /boot/config.txt  ->  extraargs=psi=1
+if [ -r /proc/pressure/cpu ]; then
+    echo "  PSI: enabled ($(head -n1 /proc/pressure/cpu))"
+else
+    printf '  WARN PSI not enabled -> lmkd will exit and Android will reboot-loop.\n'
+    printf '       Add "extraargs=psi=1" to /boot/config.txt (or rebuild without\n'
+    printf '       CONFIG_PSI_DEFAULT_DISABLED) and reboot.\n'
+fi
 mount | grep -q 'type cgroup2' && echo "  cgroup2 ok" || echo "  WARN cgroup2 not mounted (needed by Android)"
 
 # ----------------------------------------------------------- 3. android images

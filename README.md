@@ -79,6 +79,8 @@ Temperature   : 51 C -> 68 C under sustained load, no throttling issues
     ├── wayland-adapt.sh             Detect the connected head, regenerate touch binding
     ├── install-terminal-polish.sh   Colour prompt, LS_COLORS, fonts (+CJK), console font
     ├── install-waydroid.sh          Android container (LXC) + all container-side fixes
+    ├── debug-waydroid.sh            Capture logcat + dmesg + manager log + state timeline
+    ├── analyse-waydroid.sh          Summarise a debug-waydroid capture
     ├── start-weston.sh              Start Weston on card0 (dev mode, via seatd)
     ├── wayland-check.sh             Wayland/GPU/touch acceptance checks (21 items)
     ├── alpine-run.sh                Run commands inside the Alpine rootfs (QEMU/binfmt)
@@ -259,7 +261,7 @@ Wiring: `PI5 -> USB-TTL RX`, `PI6 -> USB-TTL TX`, `GND -> GND`, **VCC left uncon
 ## Roadmap
 
 - **v0.19** — Weston (DRM backend) + Panfrost + HDMI + touchscreen — path working on hardware, image integration pending
-- **v0.20** — Waydroid container — **in progress**: Android boots to SystemServer, container still exits
+- **v0.20** — Waydroid container — **in progress**: Android boots and the container now stays up (v0.20-debug)
 - **v0.21** — Android graphics acceleration
 
 ## License
