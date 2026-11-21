@@ -129,3 +129,26 @@ make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j8 Image modules dtbs
 - **v0.21**：Android 图形加速
 
 详见 `CHANGELOG-Alpindroid.md` 路线图章节。
+---
+
+## 参考资料
+
+| 来源 | 用途 |
+|---|---|
+| `https://github.com/walnutpi/linux` (branch 6.1.31, HEAD `30ff3fd5cf`) | 厂商内核源码，本项目基于它打补丁 |
+| `https://github.com/walnutpi/walnutpi_wiki` | 官方文档（引脚图、启动流程） |
+| `https://github.com/walnutpi/walnutpi-build` | 厂商镜像构建工具（含各板型 `boot.cmd` / `config.txt`，可作参考，本项目未使用） |
+| `torvalds/linux` master | PPU 驱动、panfrost resume 逻辑的对照基准 |
+
+厂商构建工具已在编译机保留一份副本（`~/alpindroid/debian12/`），主要价值是 `board/*/boot.cmd` 和 `config.txt` 模板。
+
+## 未纳入版本库的内容
+
+| 路径 | 原因 |
+|---|---|
+| `output/*.img` | 镜像 2.7 GB/个，SHA256 记录在 `IMAGES.md` |
+| `images/` | 官方底板镜像 2.7 GB |
+| `work/` | 内核源码树 1.9 GB + rootfs，改造后的文件已提取到 `kernel/` |
+| `backup/` | 归档 |
+| `ssh.txt` | **含明文密码，必须排除** |
+| `debian12/` | 厂商工具副本，可从 GitHub 重新获取 |

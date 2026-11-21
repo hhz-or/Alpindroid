@@ -6,6 +6,7 @@ output/*.tmp
 
 # 底板镜像 / Debian 原始镜像
 images/*.img
+# 厂商构建工具副本（内含 .git，避免被当子模块）
 debian12/
 
 # 内核源码树（1.9 GB），只保留修改过的文件在 kernel/
