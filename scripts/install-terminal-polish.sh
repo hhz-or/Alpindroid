@@ -11,7 +11,7 @@
 #
 # What it installs
 #   bash                3.5 MB   — optional interactive shell (ash stays default)
-#   font-noto           9.2 MB   — Sans / Serif / Sans Mono
+#   font-noto           9.2 MB   — optional (WITH_NOTO=1), hangs under qemu-binfmt
 #   font-adobe-source-code-pro  1.6 MB — proper monospace for the terminal
 #   font-wqy-zenhei     16 MB   — CJK coverage (much smaller than font-noto-cjk's 88 MB)
 #   consolefont-spleen  65 KB   — readable console font for the framebuffer tty
@@ -46,7 +46,14 @@ if grep -q 'dl-cdn.alpinelinux.org' /etc/apk/repositories 2>/dev/null; then
     sed -i 's|https\?://dl-cdn.alpinelinux.org|https://mirrors.aliyun.com|' /etc/apk/repositories
 fi
 
-PKGS="font-noto font-adobe-source-code-pro consolefont-spleen"
+# font-noto pulls 42 files and hangs under qemu-binfmt during an image build,
+# so the default set keeps only what the terminal really needs: a CJK face
+# and a proper monospace. Set WITH_NOTO=1 to add the full Noto family when
+# running this directly on the board.
+PKGS="font-adobe-source-code-pro consolefont-spleen"
+if [ "${WITH_NOTO:-0}" = "1" ]; then
+    PKGS="$PKGS font-noto"
+fi
 if [ "$WITH_BASH" = "1" ]; then
     PKGS="$PKGS bash"
 fi
@@ -56,7 +63,11 @@ else
     PKGS="$PKGS font-wqy-zenhei"
 fi
 # shellcheck disable=SC2086
-apk add --no-cache $PKGS
+# A font package failing must not abort the whole step: the prompt,
+# LS_COLORS and the fontconfig rules are still worth installing.
+if ! apk add --no-cache $PKGS; then
+    echo "  WARN package install failed; fonts may be missing"
+fi
 fc-cache -f >/dev/null 2>&1 || true
 echo "  fonts now visible to fontconfig: $(fc-list 2>/dev/null | wc -l)"
 

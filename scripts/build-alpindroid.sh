@@ -336,7 +336,8 @@ chk "weston GL 渲染器"                   test -f "$ROOTMNTP/usr/lib/libweston
 chk "seatd 已安装"                       test -x "$ROOTMNTP/usr/bin/seatd"
 chk "seatd 在 default runlevel"          test -L "$ROOTMNTP/etc/runlevels/default/seatd"
 chk "libinput 已安装"                    sh -c "ls '$ROOTMNTP/usr/lib/'libinput.so* 2>/dev/null | grep -q libinput"
-chk "hid_multitouch.ko 存在"             test -n "$(find "$ROOTMNTP/lib/modules/$KVER" -name hid_multitouch.ko -print -quit)"
+# 内核模块文件名是 hid-multitouch.ko（连字符），不是 hid_multitouch.ko
+chk "hid-multitouch.ko 存在"             test -n "$(find "$ROOTMNTP/lib/modules/$KVER" -name 'hid?multitouch.ko' -print -quit)"
 chk "weston.ini 已安装"                  test -f "$ROOTMNTP/etc/xdg/weston/weston.ini"
 chk "wayland-adapt.sh 已安装"            test -x "$ROOTMNTP/usr/local/sbin/wayland-adapt.sh"
 chk "开机重生成触摸绑定（local.d）"      test -x "$ROOTMNTP/etc/local.d/alpindroid-runtime.start"
@@ -350,8 +351,9 @@ chk "waydroid OpenRC 服务"               test -f "$ROOTMNTP/etc/init.d/waydroi
 chk "lxc 已安装"                         test -x "$ROOTMNTP/usr/bin/lxc-start"
 chk "waydroid-setup 已固化"              test -x "$ROOTMNTP/usr/local/sbin/waydroid-setup"
 chk "首次启动扩容钩子"                   test -x "$ROOTMNTP/etc/local.d/alpindroid-firstboot.start"
-chk "growpart 已预装"                    test -x "$ROOTMNTP/usr/bin/growpart"
-chk "resize2fs 已预装"                   sh -c "ls '$ROOTMNTP'/*bin/resize2fs 2>/dev/null | grep -q resize2fs"
+chk "growpart 已预装"                    sh -c "test -x '$ROOTMNTP/usr/bin/growpart' -o -x '$ROOTMNTP/sbin/growpart'"
+# Alpine 装在 /usr/sbin（e2fsprogs-extra），也兼容 /sbin
+chk "resize2fs 已预装"                   sh -c "test -x '$ROOTMNTP/usr/sbin/resize2fs' -o -x '$ROOTMNTP/sbin/resize2fs'"
 chk "config.txt extraargs 含 psi=1"      grep -qE '^extraargs=.*psi=1' "$CFG"
 chk "eglinfo 存在" test -x "$ROOTMNTP/usr/bin/eglinfo"
 chk "cgroup2 已写入 fstab" grep -q cgroup2 "$ROOTMNTP/etc/fstab"
