@@ -1,5 +1,8 @@
 # Alpindroid
 
+> A Linux system based on H618 hardware (WalnutPi), integrating Debian 12 boot chain with Alpine Linux userspace, targeting Waydroid support.
+> It resolves the GPU and power supply issues present in the official WalnutPi Debian 12 distribution.
+
 WalnutPi ZeroW（Allwinner H618）上的 **Alpine Linux 3.23 系统**，从官方 Debian 12 镜像改造而来。
 
 不编译 AOSP，目标是在轻量 Alpine 上把硬件全部跑通，最终承载 Waydroid（Android 容器）。
