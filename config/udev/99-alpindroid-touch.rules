@@ -1,18 +1,22 @@
-# Alpindroid — bind generic touchscreens to the HDMI output
+# Alpindroid — bind generic touchscreens to the connected head (template)
 #
-# The WalnutPi ZeroW panel is a plain USB HID multi-touch device
-# (OpenWare Multi-Touch-V5000, vendor 222a product 0001). The kernel
-# hid-multitouch driver creates an MT-B input node with INPUT_PROP_DIRECT,
-# libinput picks it up, and Weston maps its coordinates onto the output
-# named in WL_OUTPUT. Without this binding Weston only associates the
-# touchscreen with whatever output happens to be enabled first, which breaks
-# as soon as a second head (or DPMS off) is involved.
+# This file is only the packaged fallback. The authoritative rule is generated
+# at runtime by /usr/local/sbin/wayland-adapt.sh, which reads the connected
+# connector from DRM sysfs (`cardN-<NAME>/status == connected`) and writes
 #
-# Install to /etc/udev/rules.d/99-alpindroid-touch.rules and reload udev:
-#   udevadm control --reload && udevadm trigger --subsystem-match=input
+#   ENV{WL_OUTPUT}="<that connector>"
 #
-# The match is on ID_INPUT_TOUCHSCREEN, which the input_id builtin sets for any
-# device libinput would treat as a touchscreen, so it is not tied to one
-# specific panel.
+# into /etc/udev/rules.d/99-alpindroid-touch.rules. It runs from
+# /etc/local.d/alpindroid-runtime.start on boot and can be re-run by hand after
+# plugging a different screen:
+#
+#   sudo wayland-adapt.sh
+#
+# Why the match is on ID_INPUT_TOUCHSCREEN and not on a USB ID: the input_id
+# builtin sets that property for anything libinput would treat as a touchscreen,
+# so the rule is not tied to the OpenWare Multi-Touch-V5000 specifically. The
+# panel is a plain USB HID multi-touch device (MT-B, INPUT_PROP_DIRECT); its raw
+# 0..1920 / 0..1080 coordinate range is scaled onto the actual output by
+# libinput, so no calibration matrix is needed when the head resolution changes.
 
 ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_TOUCHSCREEN}=="1", ENV{WL_OUTPUT}="HDMI-A-1"

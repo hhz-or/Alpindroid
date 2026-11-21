@@ -71,11 +71,13 @@ Temperature   : 51 C -> 68 C under sustained load, no throttling issues
 │
 └── scripts/
     ├── setup-kernel.sh              Clone upstream + apply patches (one command)
-    ├── build-alpindroid.sh          One-shot image builder (15 automated checks)
+    ├── build-alpindroid.sh          One-shot image builder (28 automated checks)
     ├── build-image.sh               Low-level assembler (base image + rootfs -> image)
     ├── replace-modules.sh           Safe kernel-module replacement
     ├── install-gpu-stack.sh         Inject Mesa via chroot + QEMU
     ├── install-wayland-stack.sh     Weston 14 + seatd + libinput + touch wiring
+    ├── wayland-adapt.sh             Detect the connected head, regenerate touch binding
+    ├── install-terminal-polish.sh   Colour prompt, LS_COLORS, fonts (+CJK), console font
     ├── start-weston.sh              Start Weston on card0 (dev mode, via seatd)
     ├── wayland-check.sh             Wayland/GPU/touch acceptance checks (21 items)
     ├── alpine-run.sh                Run commands inside the Alpine rootfs (QEMU/binfmt)
@@ -122,7 +124,7 @@ Takes ~25 minutes on 8 cores.
 sudo sh scripts/build-alpindroid.sh v0.19 /tmp/newmods/lib/modules/6.1.31+
 ```
 
-Output: `output/Alpindroid-ZeroW-v0.19.img`. The script runs 15 automated checks
+Output: `output/Alpindroid-ZeroW-v0.19.img`. The script runs 28 automated checks
 (module directory layout, key `.ko` files, DTB nodes, firmware, `config.txt`, Mesa, cgroup2)
 and aborts on any failure.
 
@@ -141,11 +143,11 @@ build** — everything comes from the Alpine 3.23 aarch64 repositories.
 
 | Layer | Implementation |
 |---|---|
-| Output | `sun4i-drm`, `/dev/dri/card0` (KMS, atomic modeset), head `HDMI-A-1` |
+| Output | `sun4i-drm`, `/dev/dri/card0` (KMS, atomic modeset); head name detected at boot, mode `preferred` (EDID) |
 | Renderer | GL (`gl-renderer.so`) on `/dev/dri/renderD128` — Mesa 25.2.7, Mali-G31 (Panfrost) |
 | Session | `seatd` + `libseat` (`LIBSEAT_BACKEND=seatd`); no root, no `chmod 777 /dev/dri` |
 | Touch | generic USB HID multi-touch: in-kernel `hid_multitouch`, MT-B slots, `INPUT_PROP_DIRECT`, 10 points → `libinput` |
-| Output binding | udev rule sets `WL_OUTPUT=HDMI-A-1` on any device with `ID_INPUT_TOUCHSCREEN=1` |
+| Output binding | `wayland-adapt.sh` detects the connected connector and generates the udev rule (`WL_OUTPUT=<head>`) at boot |
 
 The touchscreen is **not** driven by a vendor driver. The panel enumerates as a
 standard USB HID device (`222a:0001`, `OpenWare Multi-Touch-V5000`), and the
@@ -169,6 +171,15 @@ pkill -x weston
 sh scripts/wayland-check.sh --touch=15
 ```
 
+Nothing in this layer is pinned to one panel:
+
+| What could be hard-coded | What is done instead |
+|---|---|
+| Connector name (`HDMI-A-1`) | `wayland-adapt.sh` reads `cardN-<NAME>/status` from DRM sysfs and rewrites both the udev `WL_OUTPUT` rule and `weston.ini`'s `[output] name`; it runs from `/etc/local.d` on boot and can be re-run by hand after swapping screens |
+| Panel resolution | `mode=preferred` — EDID decides, so 1024x600 and 1080p heads both work |
+| Touch coordinate range | the panel reports 0..1920 / 0..1080, libinput scales it onto whatever the output is; no calibration matrix is baked in |
+| Fonts / colours | `install-terminal-polish.sh` sets `monospace -> Source Code Pro`, `sans-serif -> Noto Sans`, CJK fallback to WenQuanYi, plus `LS_COLORS` and a coloured prompt for both ash and bash |
+
 Measured on the ZeroW:
 
 ```
@@ -179,7 +190,7 @@ Using rendering device: /dev/dri/renderD128
 GL renderer: Mali-G31 (Panfrost)            OpenGL ES 3.1 Mesa 25.2.7
 Output 'HDMI-A-1' enabled                   1024x600@60.1, preferred
 Touchscreen - OpenWare Multi-Touch-V5000 - event3   (MT-B, PROP=DIRECT)
-wayland-check.sh                            PASS 21  FAIL 0
+wayland-check.sh                            PASS 19  FAIL 0
 ```
 
 Status: **development mode only** — Weston is started by hand over SSH/TTY. No

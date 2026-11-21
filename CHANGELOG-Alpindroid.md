@@ -505,3 +505,41 @@ Two notes from the vendor A/B run:
   reproducible there as-is;
 * the vendor image shows the same `hid-generic` -> `hid-multitouch` rebind and
   the same `usb reset`; both are normal for this controller.
+
+### 14.8 Adaptive resolution and touch scaling (v0.19)
+
+Nothing in the stack is pinned to this particular 1024x600 panel:
+
+| Risk of hard-coding | What the implementation does |
+|---|---|
+| Connector name | `scripts/wayland-adapt.sh` reads `cardN-<NAME>/status` from DRM sysfs, takes the first `connected` head, and rewrites **both** `/etc/udev/rules.d/99-alpindroid-touch.rules` (`ENV{WL_OUTPUT}="<head>"`) and `weston.ini`'s `[output] name`. It is installed to `/usr/local/sbin`, runs from `/etc/local.d/alpindroid-runtime.start` on every boot, and can be re-run by hand after swapping screens. With no connected head (e.g. inside a chroot while building an image) it removes the `WL_OUTPUT` rule instead of guessing, and Weston falls back to the first enabled output. |
+| Panel resolution | `mode=preferred` everywhere — EDID decides. The measured head is 1024x600; the same config drives a 1080p monitor with no edit. |
+| Touch coordinate range | The panel reports MT-B in 0..1920 / 0..1080; libinput scales that onto whatever the output is, so no `LIBINPUT_CALIBRATION_MATRIX` is baked in. Verified: `EV_ABS ABS_MT_POSITION_X/Y = 693/433` lands under the finger on the 1024x600 head. |
+| Fonts / colours | `scripts/install-terminal-polish.sh` maps `monospace -> Source Code Pro` and `sans-serif -> Noto Sans` via `/etc/fonts/local.conf` (`prepend … strong`, because WenQuanYi also advertises monospace), adds CJK fallback, `LS_COLORS`, a coloured prompt for **both** ash and bash (bash needs `\[ \]`, busybox ash must not get them), `inputrc`, and a framebuffer console font. |
+
+Boot-time evidence on the board:
+
+```
+wayland-adapt: connected head = HDMI-A-1
+  wrote /etc/udev/rules.d/99-alpindroid-touch.rules (WL_OUTPUT=HDMI-A-1)
+  updated [output] name in /etc/xdg/weston/weston.ini
+  event1: WL_OUTPUT=HDMI-A-1
+
+weston: Using config file '/etc/xdg/weston/weston.ini'
+        GL renderer: Mali-G31 (Panfrost)
+        associating input device event1 with output HDMI-A-1 (HDMI-A-1 by udev)
+        Output 'HDMI-A-1' enabled with head(s) HDMI-A-1
+wayland-check.sh -> PASS 19  FAIL 0
+```
+
+Baking it into the image (`scripts/build-alpindroid.sh`):
+
+* new step `[5c]` runs `install-wayland-stack.sh` and `install-terminal-polish.sh`
+  inside the rootfs chroot (`qemu-aarch64-static`, with `proc`/`sys`/`dev` and
+  `resolv.conf` mounted), so a v0.19 image boots with the Wayland stack, the
+  touch binding and the fonts already present — no post-boot `apk add`;
+* 13 new checks were added to step `[6/6]` (weston + DRM + GL modules, seatd and
+  its runlevel, libinput, `hid_multitouch.ko`, `weston.ini`, the adapter, the
+  local.d boot hook, the colour profile and the fonts), so the builder now runs
+  28 checks and still aborts on any failure;
+* v0.18 is untouched: everything above lives in the user-space layer.

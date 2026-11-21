@@ -195,6 +195,47 @@ else
     echo "  cgroup2 -> /etc/fstab"
 fi
 
+say "[5c] 安装 Wayland 栈 + 终端美化（chroot + QEMU）"
+# 这一段让 v0.19 镜像自带 Weston/seatd/libinput/触摸绑定/字体与彩色终端，
+# 不再依赖“启动后手工 apk add”。所有分辨率相关的东西都不写死：
+#   * 输出名由 wayland-adapt.sh 从 DRM sysfs 检测，开机时（/etc/local.d）重新生成
+#   * 模式固定为 preferred（EDID 决定）
+#   * 触摸坐标由 libinput 按 ABS 范围缩放到实际输出，无需校准矩阵
+if [ -x /usr/bin/qemu-aarch64-static ]; then
+    cp /usr/bin/qemu-aarch64-static "$ROOTMNTP/usr/bin/" 2>/dev/null
+    mount -t proc proc "$ROOTMNTP/proc" 2>/dev/null
+    mount -t sysfs sys "$ROOTMNTP/sys" 2>/dev/null
+    mount -t devtmpfs dev "$ROOTMNTP/dev" 2>/dev/null
+    cp /etc/resolv.conf "$ROOTMNTP/etc/resolv.conf" 2>/dev/null
+    REPO_DIR=$(cd "$SCRIPTDIR/.." && pwd)
+    for f in install-wayland-stack.sh install-terminal-polish.sh wayland-adapt.sh; do
+        cp "$SCRIPTDIR/$f" "$ROOTMNTP/tmp/"
+        chmod 0755 "$ROOTMNTP/tmp/$f"
+    done
+    cp "$REPO_DIR/config/weston.ini" "$ROOTMNTP/tmp/weston.ini" 2>/dev/null
+    cp "$REPO_DIR/config/udev/99-alpindroid-touch.rules" "$ROOTMNTP/tmp/99-alpindroid-touch.rules" 2>/dev/null
+    if chroot "$ROOTMNTP" /bin/sh -c \
+        'WESTON_INI_SRC=/tmp/weston.ini UDEV_RULE_SRC=/tmp/99-alpindroid-touch.rules sh /tmp/install-wayland-stack.sh alpine'; then
+        echo "  OK   Wayland 栈安装成功"
+    else
+        echo "  WARN Wayland 栈安装失败（可在启动后手动执行 install-wayland-stack.sh）"
+    fi
+    if chroot "$ROOTMNTP" /bin/sh /tmp/install-terminal-polish.sh; then
+        echo "  OK   终端美化安装成功"
+    else
+        echo "  WARN 终端美化安装失败"
+    fi
+    rm -f "$ROOTMNTP/tmp/install-wayland-stack.sh" "$ROOTMNTP/tmp/install-terminal-polish.sh" \
+          "$ROOTMNTP/tmp/wayland-adapt.sh" "$ROOTMNTP/tmp/weston.ini" \
+          "$ROOTMNTP/tmp/99-alpindroid-touch.rules"
+    umount "$ROOTMNTP/dev"  2>/dev/null
+    umount "$ROOTMNTP/sys"  2>/dev/null
+    umount "$ROOTMNTP/proc" 2>/dev/null
+    rm -f "$ROOTMNTP/usr/bin/qemu-aarch64-static"
+else
+    echo "  WARN 缺少 qemu-aarch64-static，跳过 Wayland 栈与终端美化"
+fi
+
 say "[6/6] 最终校验"
 
 fail=0
@@ -234,6 +275,21 @@ chk "config.txt overlays 含 pmic-axp313a" grep -q 'pmic-axp313a' "$CFG"
 
 # 模块数量
 chk "panfrost_dri.so 存在" test -f "$ROOTMNTP/usr/lib/dri/panfrost_dri.so"
+
+# Wayland / 触摸 / 终端（v0.19 新增，均为用户空间层，不动 v0.18 内核基线）
+chk "weston 已安装"                      test -x "$ROOTMNTP/usr/bin/weston"
+chk "weston DRM 后端"                    test -f "$ROOTMNTP/usr/lib/libweston-14/drm-backend.so"
+chk "weston GL 渲染器"                   test -f "$ROOTMNTP/usr/lib/libweston-14/gl-renderer.so"
+chk "seatd 已安装"                       test -x "$ROOTMNTP/usr/bin/seatd"
+chk "seatd 在 default runlevel"          test -L "$ROOTMNTP/etc/runlevels/default/seatd"
+chk "libinput 已安装"                    sh -c "ls '$ROOTMNTP/usr/lib/'libinput.so* 2>/dev/null | grep -q libinput"
+chk "hid_multitouch.ko 存在"             test -n "$(find "$ROOTMNTP/lib/modules/$KVER" -name hid_multitouch.ko -print -quit)"
+chk "weston.ini 已安装"                  test -f "$ROOTMNTP/etc/xdg/weston/weston.ini"
+chk "wayland-adapt.sh 已安装"            test -x "$ROOTMNTP/usr/local/sbin/wayland-adapt.sh"
+chk "开机重生成触摸绑定（local.d）"      test -x "$ROOTMNTP/etc/local.d/alpindroid-runtime.start"
+chk "彩色终端 profile"                   test -f "$ROOTMNTP/etc/profile.d/alpindroid-color.sh"
+chk "字体已安装"                         sh -c "ls -A '$ROOTMNTP/usr/share/fonts' 2>/dev/null | grep -q ."
+chk "fontconfig 规则（monospace/CJK）"   test -f "$ROOTMNTP/etc/fonts/local.conf"
 chk "eglinfo 存在" test -x "$ROOTMNTP/usr/bin/eglinfo"
 chk "cgroup2 已写入 fstab" grep -q cgroup2 "$ROOTMNTP/etc/fstab"
 

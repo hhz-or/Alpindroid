@@ -27,6 +27,7 @@ set -e
 DESKTOP_USER="${1:-alpine}"
 WESTON_INI_SRC="${WESTON_INI_SRC:-}"
 UDEV_RULE_SRC="${UDEV_RULE_SRC:-}"
+SCRIPTDIR=$(cd "$(dirname "$0")" && pwd)
 
 RUNTIME_DIR_INIT=/etc/local.d/alpindroid-runtime.start
 TOUCH_RULE=/etc/udev/rules.d/99-alpindroid-touch.rules
@@ -87,20 +88,23 @@ fi
 echo "  $(grep '^seat:' /etc/group)"
 echo "  socket: $(ls -l /run/seatd.sock 2>/dev/null || echo '(missing)')"
 
-# ------------------------------------------------- 4. udev: touch -> HDMI-A-1
-say "4/6 udev: bind touchscreens to the HDMI output"
+# ------------------------------------- 4. udev: touch -> the connected head
+say "4/6 udev: bind touchscreens to the connected head (auto-detected)"
 mkdir -p /etc/udev/rules.d
-if [ -n "$UDEV_RULE_SRC" ] && [ -f "$UDEV_RULE_SRC" ]; then
+# Ship the adapter so the binding can be regenerated for any board/screen
+# instead of hard-coding one connector name.
+if [ -f "$SCRIPTDIR/wayland-adapt.sh" ]; then
+    mkdir -p /usr/local/sbin
+    install -m 0755 "$SCRIPTDIR/wayland-adapt.sh" /usr/local/sbin/wayland-adapt.sh
+    echo "  installed /usr/local/sbin/wayland-adapt.sh"
+fi
+if [ -x /usr/local/sbin/wayland-adapt.sh ]; then
+    /usr/local/sbin/wayland-adapt.sh || true
+elif [ -n "$UDEV_RULE_SRC" ] && [ -f "$UDEV_RULE_SRC" ]; then
     install -m 0644 "$UDEV_RULE_SRC" "$TOUCH_RULE"
-    echo "  installed $UDEV_RULE_SRC -> $TOUCH_RULE"
+    echo "  no adapter available, installed static fallback $UDEV_RULE_SRC"
 else
-    cat > "$TOUCH_RULE" <<'EOF'
-# Bind every touchscreen to the HDMI output so libinput/Weston map touch
-# coordinates onto the right head. The panel is a generic HID multi-touch
-# device (MT-B), no vendor driver involved.
-ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_TOUCHSCREEN}=="1", ENV{WL_OUTPUT}="HDMI-A-1"
-EOF
-    echo "  wrote default $TOUCH_RULE"
+    echo "  WARN neither wayland-adapt.sh nor a rule source available"
 fi
 if command -v udevadm >/dev/null 2>&1; then
     udevadm control --reload >/dev/null 2>&1 || true
@@ -152,10 +156,16 @@ chmod 0700 "/run/user/$UID_NUM"
 mkdir -p /etc/local.d
 cat > "$RUNTIME_DIR_INIT" <<EOF
 #!/bin/sh
-# Created by install-wayland-stack.sh: XDG_RUNTIME_DIR for $DESKTOP_USER
+# Created by install-wayland-stack.sh: XDG_RUNTIME_DIR for $DESKTOP_USER,
+# plus a re-detection of the connected head (the panel may differ from the one
+# present at install time, so the touch binding must not be hard-coded).
 mkdir -p /run/user/$UID_NUM
 chown $UID_NUM:$GID_NUM /run/user/$UID_NUM
 chmod 0700 /run/user/$UID_NUM
+if [ -x /usr/local/sbin/wayland-adapt.sh ]; then
+    /usr/local/sbin/wayland-adapt.sh >/tmp/wayland-adapt.log 2>&1 || true
+fi
+exit 0
 EOF
 chmod 0755 "$RUNTIME_DIR_INIT"
 rc-update add local default >/dev/null 2>&1 || true
