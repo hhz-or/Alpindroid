@@ -789,3 +789,54 @@ Android boot — works offline. On this board the growth step is already done:
 /dev/root  117.0G  3.4G used  108.9G available  3%
 mmcblk1p2  124721135 sectors   (the whole card)
 ```
+
+### 15.11 Android baked into the image (no network at all)
+
+The release image now carries Android itself. Steps `[5c]`/`[5d]` are unchanged;
+`[5e]` grew into the step that makes v0.22 self-contained:
+
+```
+[5e] 内置 Android 镜像
+  unmount + detach the old loop mappings first   (see the trap below)
+  truncate the image 2.9 G -> 6 GiB
+  sfdisk -N 2 ,+                                 grow p2 to the end (5.7 G fs)
+  losetup -fP (new table) -> e2fsck -> resize2fs -> mount p2 + p1
+  copy system.img (1.9 G) + vendor.img (403 M) into /var/lib/waydroid/images
+  write waydroid.cfg, waydroid.prop, host-permissions/, metadata/
+  build the LXC config from the shipped templates:
+      cat config_base config_3 config_4 > lxc/waydroid/config
+      sed LXCARCH -> aarch64
+      sed 'cgroup:ro' -> 'cgroup:mixed'          (fix ①)
+      cp waydroid.seccomp; : > config_session    (filled at session start)
+      config_nodes with /dev/dma_heap + /metadata (fixes ②③)
+  re-run install-waydroid.sh --no-images
+```
+
+`waydroid init` is not used: it contacts the OTA endpoint before looking at any
+local image, which fails both on the board and on the build host
+(`Remote end closed connection without response`). Everything it would have
+produced is generated from the templates in
+`/usr/lib/waydroid/data/configs/` instead.
+
+Image size and checks:
+
+```
+output/Alpindroid-ZeroW-v0.22.img   6.0 GiB (6,442,450,944 bytes)
+SHA256 c3288ca91061a43f8bc1202e16a553a401ad1c4facbbb3efd55de001c7f62516
+42/42 image checks pass
+/var/lib/waydroid 占用 2.3 G, 分区 5.7 G 中已用 2.9 G
+system.img 前 300 MB 的 sha256 与源文件一致 (4543ab77...)
+只读挂载验证前后镜像 sha256 不变
+```
+
+**Trap worth remembering**: the first attempt changed the partition table while
+an older loop device was still mapping the image. `sfdisk` wrote the new table,
+but the live mapping kept the old 2.5 G size, so the Android images were written
+past the end of the ext4 filesystem — the result mounted fine but reading
+`system.img` returned `Input/output error`. The fix is at the top of `[5e]`:
+unmount both partitions, `losetup -d` every loop that references the image, then
+`truncate`/`sfdisk`, and only then create the new loop.
+
+First boot on a freshly flashed card therefore needs no network at all: the
+first-boot hook only grows the partition to the full card, and the images are
+already in place.

@@ -289,6 +289,154 @@ else
     echo "  WARN 缺少 qemu-aarch64-static，跳过 Waydroid 安装"
 fi
 
+say "[5e] 内置 Android 镜像（扩大 root 分区 + 预置 Android）"
+# 目标：开机即有 Android，全程不需要网络。
+# root 分区原 ~2.5G，装不下 2.3G 的 system/vendor；先把镜像扩到 6G，把分区扩到
+# 镜像末尾，然后在 chroot 里直接写入已下载的 Android 镜像与 LXC 配置
+# （waydroid init 会先访问 OTA，构建机和板子上都不稳定，这里完全绕开它）。
+#
+# 重要：分区表马上要改，必须先卸载、detach 现有 loop，否则旧的分区映射会继续
+# 生效，写入会越过实际的 ext4 边界（曾因此得到一个 system.img 读 I/O 错误的镜像）。
+umount "$ROOTMNTP" 2>/dev/null || true
+umount "$BOOTMNTP" 2>/dev/null || true
+losetup -d "$LOOP" 2>/dev/null || true
+for L in $(losetup -j "$OUTPUT" 2>/dev/null | cut -d: -f1); do
+    losetup -d "$L" 2>/dev/null || true
+done
+echo "  已卸载并 detach 旧 loop 映射"
+
+TARGET_BYTES=$((6 * 1024 * 1024 * 1024))
+CUR_BYTES=$(stat -c%s "$OUTPUT")
+if [ "$CUR_BYTES" -lt "$TARGET_BYTES" ]; then
+    echo "  镜像 $CUR_BYTES -> $TARGET_BYTES 字节"
+    truncate -s "$TARGET_BYTES" "$OUTPUT"
+    if echo ',+' | sfdisk --force -N 2 "$OUTPUT" >/dev/null 2>&1; then
+        echo "  p2 已扩到镜像末尾"
+    else
+        parted -s "$OUTPUT" resizepart 2 100% || die "无法扩大 root 分区"
+        echo "  p2 已用 parted 扩到末尾"
+    fi
+fi
+
+# 新 loop 必须在这之后创建，才能看到新的分区表
+LOOP=$(losetup -fP --show "$OUTPUT")
+echo "  新 loop: $LOOP"
+lsblk -b -o NAME,SIZE "$LOOP" 2>/dev/null | sed 's/^/    /' || true
+e2fsck -f -y "${LOOP}p2" >/dev/null 2>&1 || true
+resize2fs "${LOOP}p2" || die "resize2fs 失败"
+mount "${LOOP}p2" "$ROOTMNTP" || die "挂载扩容后的 rootfs 失败"
+# boot 分区也要挂回来：[6/6] 会检查 DTB 与 config.txt
+mount "${LOOP}p1" "$BOOTMNTP" || die "重新挂载 boot 分区失败"
+echo "  文件系统: $(df -h "$ROOTMNTP" | tail -n1 | awk '{print $2" 总 / "$4" 可用"}')"
+
+cp /usr/bin/qemu-aarch64-static "$ROOTMNTP/usr/bin/" 2>/dev/null
+mount -t proc proc "$ROOTMNTP/proc" 2>/dev/null
+mount -t sysfs sys "$ROOTMNTP/sys" 2>/dev/null
+mount -t devtmpfs dev "$ROOTMNTP/dev" 2>/dev/null
+cp /etc/resolv.conf "$ROOTMNTP/etc/resolv.conf" 2>/dev/null
+cp "$SCRIPTDIR/install-waydroid.sh" "$ROOTMNTP/tmp/"
+
+# ---- 把 Android 镜像与 waydroid 配置直接写进镜像（不联网、不依赖 waydroid init）----
+# waydroid init 会先访问 OTA 再下载，构建机/板子上都不稳定；而它做的事其实只是
+#   images + waydroid.cfg + LXC 配置（模板在 /usr/lib/waydroid/data/configs/）
+# 这里直接按模板拼装，行为等价且完全离线。
+ANDROID_DIR="$BASE/work/android-images"
+IMGDIR="$ROOTMNTP/var/lib/waydroid/images"
+LXCDIR="$ROOTMNTP/var/lib/waydroid/lxc/waydroid"
+TMPL="$ROOTMNTP/usr/lib/waydroid/data/configs"
+
+if [ ! -f "$ANDROID_DIR/system.img" ] || [ ! -f "$ANDROID_DIR/vendor.img" ]; then
+    echo "  WARN 缺少 $ANDROID_DIR/{system,vendor}.img，镜像将不含 Android"
+else
+    install -d "$IMGDIR" "$LXCDIR" "$ROOTMNTP/var/lib/waydroid/host-permissions"                "$ROOTMNTP/var/lib/waydroid/metadata"
+    echo "  复制 Android 镜像（$(du -sh "$ANDROID_DIR" | cut -f1)）"
+    cp -f "$ANDROID_DIR/system.img" "$IMGDIR/system.img"
+    cp -f "$ANDROID_DIR/vendor.img" "$IMGDIR/vendor.img"
+
+    echo "  生成 LXC 配置（config_base + config_3 + config_4 模板）"
+    cat "$TMPL/config_base" "$TMPL/config_3" "$TMPL/config_4" > "$LXCDIR/config"
+    sed -i 's/LXCARCH/aarch64/' "$LXCDIR/config"
+    # 我们的修复①：Android 需要写自己的 per-uid cgroup，只读会直接失败
+    sed -i 's|lxc.mount.auto = cgroup:ro|lxc.mount.auto = cgroup:mixed|' "$LXCDIR/config"
+    cp -f "$TMPL/waydroid.seccomp" "$LXCDIR/waydroid.seccomp"
+
+    echo "  生成 config_nodes（含 /dev/dma_heap 与 /metadata 修复）"
+    cat > "$LXCDIR/config_nodes" <<'NODES'
+lxc.mount.entry = tmpfs dev tmpfs nosuid 0 0
+lxc.mount.entry = /dev/zero dev/zero none bind,create=file,optional 0 0
+lxc.mount.entry = /dev/null dev/null none bind,create=file,optional 0 0
+lxc.mount.entry = /dev/full dev/full none bind,create=file,optional 0 0
+lxc.mount.entry = /dev/tty dev/tty none bind,create=file,optional 0 0
+lxc.mount.entry = /dev/char dev/char none bind,create=dir,optional 0 0
+lxc.mount.entry = /dev/dri/renderD128 dev/dri/renderD128 none bind,create=file,optional 0 0
+lxc.mount.entry = /dev/fb0 dev/fb0 none bind,create=file,optional 0 0
+lxc.mount.entry = /dev/video0 dev/video0 none bind,create=file,optional 0 0
+lxc.mount.entry = /dev/binder dev/binder none bind,create=file,optional 0 0
+lxc.mount.entry = /dev/vndbinder dev/vndbinder none bind,create=file,optional 0 0
+lxc.mount.entry = /dev/hwbinder dev/hwbinder none bind,create=file,optional 0 0
+lxc.mount.entry = /dev/dma_heap dev/dma_heap none bind,create=dir,optional 0 0
+lxc.mount.entry = none dev/pts devpts defaults,mode=644,ptmxmode=666,create=dir 0 0
+lxc.mount.entry = /var/lib/waydroid/host-permissions vendor/etc/host-permissions none bind,optional 0 0
+lxc.mount.entry = /var/lib/waydroid/metadata metadata none bind,create=dir,optional 0 0
+lxc.mount.entry = /sys/kernel/debug sys/kernel/debug none rbind,create=dir,optional 0 0
+lxc.mount.entry = tmpfs mnt_extra tmpfs nodev 0 0
+lxc.mount.entry = tmpfs tmp tmpfs nodev 0 0
+lxc.mount.entry = tmpfs var tmpfs nodev 0 0
+lxc.mount.entry = tmpfs run tmpfs nodev 0 0
+NODES
+
+    # config_session 在 session start 时才填充（含 wayland/pulse socket 路径）
+    : > "$LXCDIR/config_session"
+
+    echo "  生成 waydroid.cfg 与 waydroid.prop"
+    cat > "$ROOTMNTP/var/lib/waydroid/waydroid.cfg" <<'WCFG'
+[waydroid]
+arch = arm64
+vendor_type = MAINLINE
+system_datetime = 1790477549
+vendor_datetime = 1792664309
+suspend_action = freeze
+mount_overlays = True
+auto_adb = False
+images_path = /var/lib/waydroid/images
+binder = binder
+vndbinder = vndbinder
+hwbinder = hwbinder
+system_ota = https://ota.waydro.id/system/lineage/waydroid_arm64/VANILLA.json
+vendor_ota = https://ota.waydro.id/vendor/waydroid_arm64/MAINLINE.json
+WCFG
+
+    cat > "$ROOTMNTP/var/lib/waydroid/waydroid.prop" <<'WPROP'
+sys.use_memfd=true
+ro.adb.secure=1
+ro.debuggable=0
+gralloc.gbm.device=/dev/dri/renderD128
+debug.stagefright.ccodec=0
+ro.hardware.gralloc=gbm
+ro.hardware.egl=mesa
+ro.hardware.vulkan=panfrost
+ro.hardware.camera=v4l2
+ro.opengles.version=196610
+WPROP
+
+    echo "  OK   Android 镜像与配置已内置"
+fi
+
+# 配置就绪后再应用一次容器修复（对上面生成的 config 也是幂等的）
+if chroot "$ROOTMNTP" /bin/sh -c 'sh /tmp/install-waydroid.sh --no-images'; then
+    echo "  OK   容器修复已应用"
+else
+    echo "  WARN 容器修复应用失败"
+fi
+echo "  /var/lib/waydroid 占用: $(du -sh "$ROOTMNTP/var/lib/waydroid" 2>$null | cut -f1)"
+
+rm -f "$ROOTMNTP/tmp/install-waydroid.sh"
+umount "$ROOTMNTP/dev"  2>/dev/null
+umount "$ROOTMNTP/sys"  2>/dev/null
+umount "$ROOTMNTP/proc" 2>/dev/null
+rm -f "$ROOTMNTP/usr/bin/qemu-aarch64-static"
+# $ROOTMNTP 保持挂载（新 loop），供 [6/6] 校验使用；脚本退出时由 cleanup 卸载
+
 say "[6/6] 最终校验"
 
 fail=0
@@ -355,6 +503,14 @@ chk "growpart 已预装"                    sh -c "test -x '$ROOTMNTP/usr/bin/gr
 # Alpine 装在 /usr/sbin（e2fsprogs-extra），也兼容 /sbin
 chk "resize2fs 已预装"                   sh -c "test -x '$ROOTMNTP/usr/sbin/resize2fs' -o -x '$ROOTMNTP/sbin/resize2fs'"
 chk "config.txt extraargs 含 psi=1"      grep -qE '^extraargs=.*psi=1' "$CFG"
+# v0.22：镜像自带 Android（离线可用）
+chk "Android system.img 已内置"          test -f "$ROOTMNTP/var/lib/waydroid/images/system.img"
+chk "Android vendor.img 已内置"          test -f "$ROOTMNTP/var/lib/waydroid/images/vendor.img"
+chk "waydroid.cfg 已生成"                test -f "$ROOTMNTP/var/lib/waydroid/waydroid.cfg"
+chk "LXC 主配置已生成"                   test -f "$ROOTMNTP/var/lib/waydroid/lxc/waydroid/config"
+chk "LXC 已含 dma_heap 挂载"             grep -q 'dev/dma_heap' "$ROOTMNTP/var/lib/waydroid/lxc/waydroid/config_nodes"
+chk "LXC cgroup 为 mixed"                grep -q 'cgroup:mixed' "$ROOTMNTP/var/lib/waydroid/lxc/waydroid/config"
+chk "镜像已扩容到 5G 以上"               sh -c "test \$(stat -c%s '$OUTPUT') -gt 5368709120"
 chk "eglinfo 存在" test -x "$ROOTMNTP/usr/bin/eglinfo"
 chk "cgroup2 已写入 fstab" grep -q cgroup2 "$ROOTMNTP/etc/fstab"
 
