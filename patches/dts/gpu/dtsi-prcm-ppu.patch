@@ -1,0 +1,19 @@
+--- a/arch/arm64/boot/dts/allwinner/sun50i-h616.dtsi
++++ b/arch/arm64/boot/dts/allwinner/sun50i-h616.dtsi
+@@ -1317,6 +1317,12 @@
+ 			#reset-cells = <1>;
+ 		};
+ 
++		/* Alpindroid: H616 PRCM PPU（电源域控制器）。
++		 * 主线有、厂商整块删掉了；GPU 的电源域 (domain 2) 由它控制，
++		 * 缺失会导致 panfrost probe 时 GPU 无电、软复位无限等待而挂死。
++		 */
++		prcm_ppu: power-controller@7010250 {
++			compatible = "allwinner,sun50i-h616-prcm-ppu";
++			reg = <0x07010250 0x10>;
++			#power-domain-cells = <1>;
++		};
++
+ 		r_pio: pinctrl@7022000 {
+ 			compatible = "allwinner,sun50i-h616-r-pinctrl";
+ 			reg = <0x07022000 0x400>;

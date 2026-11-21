@@ -1,0 +1,110 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * Alpindroid v0.6: H618 + AXP313A —— 电源 / 热管理 / 显示链路
+ *
+ * ===== 实测依据（v0.2c 上 i2cget -f 直读 0x36）=====
+ *   0x13 = 0x28 -> DCDC1 = 900 mV (vdd-gpu-sys，GPU 与 SYS 共用)
+ *   0x14 = 0x28 -> DCDC2 = 900 mV (vdd-cpu)
+ *   0x15 = 0x3c -> DCDC3 = 1100 mV (vdd-dram)
+ *   0x16/0x17    -> LDO1 1.8V / LDO2 3.3V
+ *   0x10 = 0x1f  -> DCDC1/2/3 + LDO1/2 全部使能
+ *
+ * ===== v0.5 实测结果（万用表 + 板端命令）=====
+ *   VRAM 1.1V OK  VCPU 1.0V OK（cpufreq 已工作）  VGPU 0.9V OK  1.8V/3.3V OK
+ *   系统正常启动，/sys/devices/system/cpu/cpufreq/policy0 已出现
+ *   （governor=ondemand, cur=1344000）—— CPU 调频修复成功
+ *   但 HDMI 无输出 —— 原因见第 9 条
+ *
+ * ===== v0.6 两处尝试与结果 =====
+ *   【9】修复 HDMI 的 hvcc-supply（bldo1 -> vcc-wifi-io）：保留在本版
+ *   【10】把 gpu-opp-table 五档电压改为 1.1V：**本版已移除**
+ *
+ *   原因：v0.6 开机卡在 "populating /dev with existing devices through uevents"。
+ *   v0.5（能正常启动）与 v0.6 的差异只有上述两处。
+ *   最大嫌疑是【10】：v0.5 里 Panfrost 请求 810mV 被立即拒绝（-34 -ERANGE）后
+ *   直接放弃 probe；改成 1.1V 后电压匹配，Panfrost 会真正开始 GPU 硬件初始化，
+ *   若时钟/电源未就绪就会挂起，udev 读 sysfs 时随之阻塞，表现为 coldplug 卡死。
+ *   故本版先只保留 HDMI 修复，让 Panfrost 回到"快速失败"的安全状态，
+ *   以便单独验证 HDMI 供电引用是否修好。
+ *
+ * 回退：从 config.txt 的 overlays= 去掉 "pmic-axp313a"。
+ */
+
+/ {
+	/* ---------- 1. PMIC 型号纠正（实测有效）---------- */
+	fragment@0 {
+		target-path = "/soc/i2c@7081400/pmic@36";
+		__overlay__ {
+			compatible = "x-powers,axp313a";
+		};
+	};
+
+	/* ---------- 2. CPU 供电：爬升 400 uV/us ---------- */
+	fragment@1 {
+		target-path = "/soc/i2c@7081400/pmic@36/regulators/dcdc2";
+		__overlay__ {
+			regulator-ramp-delay = <400>;
+		};
+	};
+
+	/*
+	 * ---------- 3. GPU+SYS 供电：爬升 + 下限护栏 ----------
+	 * dcdc1 同时供 GPU 和 SYS。v0.4 曾把 mali-supply 指到它，
+	 * Panfrost 按 GPU 低频档把它压到 810mV，导致 SYS 供电不足、无法启动。
+	 * 这里保留 900mV 下限护栏，防止任何 consumer 把它压低。
+	 */
+	fragment@2 {
+		target-path = "/soc/i2c@7081400/pmic@36/regulators/dcdc1";
+		__overlay__ {
+			regulator-ramp-delay = <400>;
+			regulator-min-microvolt = <900000>;
+		};
+	};
+
+	/* ---------- 4. DRAM 供电：修正为实测 1.1V（原厂 1.3V 错误）---------- */
+	fragment@3 {
+		target-path = "/soc/i2c@7081400/pmic@36/regulators/dcdc3";
+		__overlay__ {
+			regulator-min-microvolt = <1100000>;
+			regulator-max-microvolt = <1100000>;
+		};
+	};
+
+	/* ---------- 5-8. Thermal 修正 ---------- */
+	fragment@4 {
+		target-path = "/thermal-zones/cpu-thermal";
+		__overlay__ {
+			polling-delay-passive = <1000>;
+			polling-delay = <1000>;
+		};
+	};
+
+	fragment@5 {
+		target-path = "/thermal-zones/cpu-thermal/trips/cpu-crit";
+		__overlay__ {
+			temperature = <115000>;
+		};
+	};
+
+	fragment@6 {
+		target-path = "/thermal-zones/gpu-thermal";
+		__overlay__ {
+			polling-delay-passive = <1000>;
+			polling-delay = <1000>;
+		};
+	};
+
+	fragment@7 {
+		target-path = "/thermal-zones/gpu-thermal/trips/gpu-crit";
+		__overlay__ {
+			type = "critical";
+		};
+	};
+
+	/*
+	 * ---------- 9. HDMI 供电引用：bldo1(已不存在) -> vcc-wifi-io ----------
+	 * 0x22 = vcc-wifi-io：1.8V、always-on、无 gpio，可安全充当 hvcc。
+	 */
+};

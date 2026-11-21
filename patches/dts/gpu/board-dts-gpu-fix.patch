@@ -1,0 +1,46 @@
+--- a/arch/arm64/boot/dts/allwinner/sun50i-h616-walnutpi-1b.dts
++++ b/arch/arm64/boot/dts/allwinner/sun50i-h616-walnutpi-1b.dts
+@@ -237,10 +237,13 @@
+ 
+ /* USB 2 & 3 are on headers only. */
+ &gpu {
+-    mali-supply = <&reg_dcdc3>;
+-	operating-points-v2 = <&gpu_opp_table>;
++	/* Alpindroid: dcdc1 = vdd-gpu-sys（GPU 与 SYS 共用）；
++	 * 厂商原来误接到 dcdc3 (vdd-dram, 固定 1.3V)。
++	 */
++	mali-supply = <&reg_dcdc1>;
++	operating-points-v2 = <&gpu_opp_fixed>;
+ 	power-domains = <&prcm_ppu 2>;
+-        status = "okay";
++	status = "okay";
+ };
+ 
+ &ehci0 {
+@@ -342,7 +345,7 @@
+ 			
+ 			reg_dcdc1: dcdc1 {
+ 				regulator-always-on;
+-				regulator-min-microvolt = <810000>;
++				regulator-min-microvolt = <900000>;
+ 				regulator-max-microvolt = <1160000>;
+ 				regulator-name = "vdd-gpu-sys";
+ 			};
+@@ -489,3 +492,17 @@
+ &ahub1_mach {
+ 	status = "okay";
+ };
++
++/* Alpindroid: 单档 GPU OPP —— 固定 432MHz @ 0.9V。
++ * dcdc1 (vdd-gpu-sys) 与 SYS 共用，压低会拖垮系统，所以不做 DVFS。
++ */
++&{/} {
++	gpu_opp_fixed: gpu-opp-fixed {
++		compatible = "operating-points-v2";
++
++		opp-432000000 {
++			opp-hz = /bits/ 64 <432000000>;
++			opp-microvolt = <900000>;
++		};
++	};
++};

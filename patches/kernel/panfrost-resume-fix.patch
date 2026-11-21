@@ -1,0 +1,57 @@
+--- a/drivers/gpu/drm/panfrost/panfrost_device.c
++++ b/drivers/gpu/drm/panfrost/panfrost_device.c
+@@ -432,6 +432,38 @@
+ int panfrost_device_resume(struct device *dev)
+ {
+ 	struct panfrost_device *pfdev = dev_get_drvdata(dev);
++	int ret;
++
++	/*
++	 * Alpindroid: 对齐主线 panfrost_device_runtime_resume()。
++	 * 厂商版本原先只调用 panfrost_device_reset()，既没有解除 GPU 复位，
++	 * 也没有重新使能时钟。而 suspend 时 GPU 电源域已被关闭，
++	 * genpd 不会替本设备恢复复位/时钟，于是 resume 后第一次访问 GPU
++	 * 寄存器就在「复位中 + 无时钟」状态下锁死总线——
++	 * 实测表现为硬挂死（串口连 printk 都打不出来，需断电重启）。
++	 */
++	ret = reset_control_deassert(pfdev->rstc);
++	if (ret) {
++		dev_err(pfdev->dev, "resume: deassert reset failed %d\n", ret);
++		return ret;
++	}
++
++	ret = clk_prepare_enable(pfdev->clock);
++	if (ret) {
++		dev_err(pfdev->dev, "resume: enable core clock failed %d\n", ret);
++		reset_control_assert(pfdev->rstc);
++		return ret;
++	}
++
++	if (pfdev->bus_clock) {
++		ret = clk_prepare_enable(pfdev->bus_clock);
++		if (ret) {
++			dev_err(pfdev->dev, "resume: enable bus clock failed %d\n", ret);
++			clk_disable_unprepare(pfdev->clock);
++			reset_control_assert(pfdev->rstc);
++			return ret;
++		}
++	}
+ 
+ 	panfrost_device_reset(pfdev);
+ 	panfrost_devfreq_resume(pfdev);
+@@ -449,6 +481,15 @@
+ 	panfrost_devfreq_suspend(pfdev);
+ 	panfrost_gpu_power_off(pfdev);
+ 
++	/*
++	 * Alpindroid: 与 resume 对称——关闭时钟并断言复位，
++	 * 避免 GPU 停在「时钟开着但电源域已关」的中间态被访问。
++	 */
++	if (pfdev->bus_clock)
++		clk_disable_unprepare(pfdev->bus_clock);
++	clk_disable_unprepare(pfdev->clock);
++	reset_control_assert(pfdev->rstc);
++
+ 	return 0;
+ }
+ #endif
