@@ -70,7 +70,11 @@ log() { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >> /tmp/alpindroid-show-ui.l
 i=0
 while [ "$i" -lt 180 ]; do
     if waydroid status 2>/dev/null | grep -q 'Session:.*RUNNING'; then
-        BOOTED=$(lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- /system/bin/getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+        # waydroid freezes the container while nothing consumes the UI, and
+        # lxc-attach blocks forever against a frozen container — unfreeze first
+        # and always bound the attach with timeout(1).
+        lxc-unfreeze -P /var/lib/waydroid/lxc -n waydroid >/dev/null 2>&1
+        BOOTED=$(timeout 10 lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- /system/bin/getprop sys.boot_completed 2>/dev/null | tr -d '\r')
         if [ "$BOOTED" = "1" ]; then
             log "android boot_completed=1; launching show-full-ui"
             BUS=$(tr '\0' '\n' < "/proc/$(pgrep -f 'waydroid session start' | head -n1)/environ" 2>/dev/null \
@@ -137,8 +141,12 @@ start() {
         return 1
     fi
 
-    # 2) waydroid container daemon + internal bridge
-    rc-service waydroid-container start >/dev/null 2>&1
+    # 2) waydroid container daemon + internal bridge.
+    #    waydroid-container sits in the boot runlevel and thus comes up long
+    #    before weston exists; its hwcomposer would try to connect to a wayland
+    #    socket that is not there yet and then never retry, leaving a black
+    #    screen. Restarting it now makes hwcomposer connect to the live socket.
+    rc-service waydroid-container restart >/dev/null 2>&1
     /usr/lib/waydroid/data/scripts/waydroid-net.sh start >/dev/null 2>&1
 
     # 3) session in its own D-Bus session bus (waydroid cannot autolaunch one)
