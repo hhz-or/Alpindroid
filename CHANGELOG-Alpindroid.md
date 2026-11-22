@@ -1211,3 +1211,49 @@ $ROOTMNTP/usr/local/sbin/dst` then failed silently because the line ended in
 exist in the base image) installed fine. The build now creates
 `/usr/local/sbin` and `/usr/local/bin` first, and that install line no longer
 swallows its errors.
+
+### 15.20 Touch dead again after flashing: weston enumerated input before udev had the property
+
+Symptom on the freshly flashed v0.22c: picture, GLES and apps fine, touch completely
+dead. Same signature as before, one step earlier in the chain:
+
+```
+[08:00:23.965] Touchscreen - OpenWare Multi-Touch-V5000 - .../event0
+[08:00:24.175] associating input device event1 with output HDMI-A-1 (none by udev)
+[08:00:24.175] associating input device event2 with output HDMI-A-1 (none by udev)
+[08:00:24.175] associating input device event3 with output HDMI-A-1 (none by udev)
+```
+
+`event0` — the panel — is missing from that list entirely.
+
+**The rule file itself was correct.** `/etc/udev/rules.d/99-alpindroid-touch.rules`
+in the image already ends with `ENV{WL_OUTPUT}="HDMI-A-1"`. What was missing is
+that weston started **before anything had triggered udev to re-apply it**, so the
+udev database still had no `WL_OUTPUT` for `event0`. `udevadm info
+/dev/input/event0` showed it only after a manual trigger.
+
+The previous fix (reload + trigger inside the service) was necessary but not
+sufficient: the packaged rule comes from a chroot build where `wayland-adapt.sh`
+deliberately drops `WL_OUTPUT` (no head is connected there), so reload+trigger
+alone can also push an empty rule. The reliable order is:
+
+```
+wayland-adapt.sh            # write the real connector name
+udevadm control --reload-rules
+udevadm trigger --subsystem-match=input --action=change
+weston                      # now enumerates input with the property present
+```
+
+`alpindroid-desktop` now does exactly that. Verified unattended, by simply
+restarting the service:
+
+```
+[19:56:30.569] associating input device event0 with output HDMI-A-1 (HDMI-A-1 by udev)
+```
+
+`udevadm info /dev/input/event0` → `E: WL_OUTPUT=HDMI-A-1`.
+
+This is the third variant of the same class of bug (ordering between the udev
+rule, the DRM/input enumeration and the compositor start), so the service now
+owns the whole sequence instead of relying on `/etc/local.d` being ordered
+correctly.

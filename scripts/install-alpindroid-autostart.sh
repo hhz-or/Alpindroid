@@ -180,13 +180,21 @@ start() {
     [ -f "$RUNTIME/pulse/native" ] || : > "$RUNTIME/pulse/native"
     chown "$UID_NUM:$UID_NUM" "$RUNTIME/pulse/native"
 
-    # 0) The touch panel needs WL_OUTPUT *before* weston enumerates input.
-    #    At boot this service can run before /etc/local.d/alpindroid-runtime.start
-    #    has (re)applied the udev rule, and then weston logs
-    #        associating input device event3 ... (none by udev)
-    #    i.e. the touchscreen is left without an output, its coordinates are
-    #    never mapped, and the panel appears dead while everything else works.
-    #    Re-apply the rule here so the ordering can never matter.
+    # 0) The touch panel needs WL_OUTPUT *before* weston enumerates input, and
+    #    the order below matters — getting it wrong cost two images:
+    #
+    #      * the packaged /etc/udev/rules.d/99-alpindroid-touch.rules has NO
+    #        WL_OUTPUT line, because wayland-adapt.sh deliberately drops it when
+    #        building inside a chroot (no head connected there);
+    #      * so reload+trigger alone push an empty rule and weston still logs
+    #            associating input device event0 ... (none by udev)
+    #        leaving the panel with no output and no touch at all;
+    #      * wayland-adapt.sh has to run FIRST to write the real connector name.
+    #
+    #    Order: adapt -> reload -> trigger -> weston.
+    if [ -x /usr/local/sbin/wayland-adapt.sh ]; then
+        /usr/local/sbin/wayland-adapt.sh >/dev/null 2>&1
+    fi
     udevadm control --reload-rules >/dev/null 2>&1
     udevadm trigger --subsystem-match=input --action=change >/dev/null 2>&1
     sleep 1
