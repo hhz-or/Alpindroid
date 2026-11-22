@@ -7,7 +7,7 @@ This file records their checksums for verification and version tracking.
 
 | Version | SHA256 | Notes |
 |---|---|---|
-| **v0.22** | `c3288ca91061a43f8bc1202e16a553a401ad1c4facbbb3efd55de001c7f62516` | **Latest**, 6.0 GB: Waydroid (LineageOS 20) as the primary UI, **Android images baked in** (`system.img` 1.9 G + `vendor.img` 403 M under `/var/lib/waydroid/images`) so first boot needs **no network**. Root partition is pre-grown to 5.7 G; the first-boot hook still expands it to the whole card. Weston/Panfrost/touch as in v0.19, plus `extraargs=psi=1` and the six container fixes. |
+| **v0.22** | `a4d992ec734d3431eb925ea244cb794e0b13c766dd4fd412301d5c2ce2d15ac1` | **Latest**, 6.0 GB: Waydroid (LineageOS 20) as the primary UI, **Android images baked in** (`system.img` 1.9 G + `vendor.img` 403 M) so first boot needs **no network**, and **the desktop autostarts** — `alpindroid-desktop` (OpenRC) brings up weston with `--shell=kiosk`, the container, the session and finally `show-full-ui`. Root partition is pre-grown to 5.7 G; the first-boot hook expands it to the whole card. GLES 3.1 on Mali-G31 (Panfrost) in both the host and Android. 49 build checks, all passing. |
 | v0.18 | `79a83716919a6fa12fa516727f9cd9ef425953d9de0d2b5e4a5377dc197abbb5` | Kernel-stable baseline: GPU fully working, Mesa preinstalled, cgroup2 auto-mounted |
 | v0.17 | `03e9647446ded3d888b6a6e8e458314b258c5e34538cb71baf0a20c7190967c6` | First version with working GPU rendering (resume fix) |
 | v0.16 | `536c81782d9402afe3283bbb5d7cc1d4cf43132c9edcd6beb6812bb5077f3856` | Fixed `/lib/modules` layout; WiFi restored |
@@ -18,22 +18,34 @@ This file records their checksums for verification and version tracking.
 
 20 images (v0.1 through v0.18) are kept on the build host under `~/alpindroid/output/`, about 54 GB total.
 
-## First boot of v0.22 (no network needed)
+## First boot of v0.22 (no network needed, nothing to run)
+
+Everything comes up by itself:
 
 ```sh
-# 1. automatic (OpenRC local, online resize, no reboot):
-#    /etc/local.d/alpindroid-firstboot.start -> growpart + resize2fs
+# 1. /etc/local.d/alpindroid-firstboot.start  -> growpart + resize2fs
 #    marker: /etc/.alpindroid-grown   log: /var/log/alpindroid-firstboot.log
-
-# 2. start the graphics session and Android (everything is already on the card):
-start-weston.sh -b
-dbus-run-session -- sh -c 'waydroid session start &'
-sleep 25 && waydroid show-full-ui
+# 2. rc-service alpindroid-desktop (default runlevel)
+#      weston --shell=kiosk  -> waydroid-container -> waydroid session
+#      -> alpindroid-show-ui, which waits for sys.boot_completed=1
+#         and then runs show-full-ui
 ```
 
 The Android images and the whole Waydroid configuration are baked into the image
-(`/var/lib/waydroid/{images,waydroid.cfg,lxc/waydroid/*}`), so nothing is
-downloaded. Autostart is deliberately disabled.
+(`/var/lib/waydroid/{images,waydroid.cfg,waydroid_base.prop,lxc/waydroid/*}`),
+so nothing is downloaded.
+
+`weston` must run with `--shell=kiosk`: Waydroid's hwcomposer creates one
+full-output wayland surface with no window semantics, and the default
+`desktop-shell` never maps it (HDMI just stays grey).
+
+Useful controls:
+
+```sh
+rc-service alpindroid-desktop status|restart|stop
+rc-update del alpindroid-desktop default     # disable the autostart
+tail -f /tmp/weston.log /tmp/alpindroid-show-ui.log
+```
 
 ## Verifying
 

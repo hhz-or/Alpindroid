@@ -890,3 +890,54 @@ It now resolves the real device through `root=PARTUUID=...` from
 device. The vendor Debian image solves the same problem with
 `/usr/lib/walnutpi/resize_part` (`findmnt -n -o SOURCE /` + `parted resizepart`),
 which works there because Debian's mount table carries the real device node.
+
+### 15.14 GLES verification (host and Android)
+
+Both sides run the same Mali-G31 through Panfrost, and both report GLES 3.1 —
+nothing is falling back to a software rasteriser.
+
+Host (`eglinfo -B`):
+
+```
+EGL API version: 1.5     EGL vendor: Mesa Project
+EGL client APIs: OpenGL OpenGL_ES
+OpenGL ES profile renderer: Mali-G31 (Panfrost)
+OpenGL ES profile version:  OpenGL ES 3.1 Mesa 25.2.7
+OpenGL ES profile SL:       GLSL ES 3.10
+(also: OpenGL 3.1 Core Profile)
+```
+
+Android (`dumpsys SurfaceFlinger`):
+
+```
+EGL implementation : 1.5 Android META-EGL
+GLES: Mesa, Mali-G31 MC1 (Panfrost), OpenGL ES 3.1 Mesa 26.0.8
+ro.opengles.version = 196610        (0x30002 -> declares GLES 3.2)
+```
+
+The extension list includes the ones that matter for real content:
+ETC1/S3TC/ASTC/BPTC texture compression, `GL_NV_draw_buffers` (MRT),
+`GL_EXT_color_buffer_float`, `GL_OES_texture_storage_multisample_2d_array`,
+`EGL_KHR_fence_sync` / `EGL_ANDROID_native_fence_sync` and
+`GL_EXT_shader_framebuffer_fetch`.
+
+Rendering is real, not just a context (`dumpsys gfxinfo com.android.settings`
+after launching Settings and swiping):
+
+```
+Total frames rendered: 68
+Janky frames: 4 (5.88%)
+50th percentile: 15 ms      ~66 fps
+90th: 25 ms   95th: 29 ms   99th: 400 ms
+Missed Vsync: 1
+```
+
+SurfaceFlinger reports its refresh period as 13333333 ns (~75 Hz).
+
+Vulkan is **not** available out of the box: `/usr/share/vulkan/icd.d/` does not
+exist and `vkgears` fails with "Failed to create Vulkan instance". Alpine ships
+`mesa-vulkan-panfrost`; it is simply not installed. GLES is unaffected.
+
+`mesa-demos` was installed on the board (`es2_info`, `es2gears_wayland`,
+`eglgears_wayland`, `vkgears`) purely for diagnosis; it is not part of the image.
+`glmark2` does not exist in Alpine, so it is not an option for benchmarks.
