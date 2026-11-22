@@ -180,6 +180,17 @@ start() {
     [ -f "$RUNTIME/pulse/native" ] || : > "$RUNTIME/pulse/native"
     chown "$UID_NUM:$UID_NUM" "$RUNTIME/pulse/native"
 
+    # 0) The touch panel needs WL_OUTPUT *before* weston enumerates input.
+    #    At boot this service can run before /etc/local.d/alpindroid-runtime.start
+    #    has (re)applied the udev rule, and then weston logs
+    #        associating input device event3 ... (none by udev)
+    #    i.e. the touchscreen is left without an output, its coordinates are
+    #    never mapped, and the panel appears dead while everything else works.
+    #    Re-apply the rule here so the ordering can never matter.
+    udevadm control --reload-rules >/dev/null 2>&1
+    udevadm trigger --subsystem-match=input --action=change >/dev/null 2>&1
+    sleep 1
+
     # 1) Weston on card0, GL on renderD128, as the desktop user through seatd
     start-stop-daemon --start --background --make-pidfile \
         --pidfile /run/alpindroid-weston.pid \

@@ -213,6 +213,10 @@ say "[5c] 安装 Wayland 栈 + 终端美化（chroot + QEMU）"
 # 这一段让 v0.19 镜像自带 Weston/seatd/libinput/触摸绑定/字体与彩色终端，
 # 不再依赖“启动后手工 apk add”。所有分辨率相关的东西都不写死：
 #   * 输出名由 wayland-adapt.sh 从 DRM sysfs 检测，开机时（/etc/local.d）重新生成
+    # 热插拔：DRM 连接器变化时重新探测输出并重绑触摸（wayland-adapt.sh 幂等）
+    install -m 0755 "$SCRIPTDIR/alpindroid-hotplug.sh" "$ROOTMNTP/usr/local/sbin/alpindroid-hotplug" 2>/dev/null || true
+    install -m 0644 "$SCRIPTDIR/../config/udev/98-alpindroid-hotplug.rules" \
+        "$ROOTMNTP/etc/udev/rules.d/98-alpindroid-hotplug.rules" 2>/dev/null || true
 #   * 模式固定为 preferred（EDID 决定）
 #   * 触摸坐标由 libinput 按 ABS 范围缩放到实际输出，无需校准矩阵
 if [ -x /usr/bin/qemu-aarch64-static ]; then
@@ -548,6 +552,8 @@ chk "weston 使用 kiosk-shell"            grep -q 'shell=kiosk' "$ROOTMNTP/usr/
 chk "alpindroid-show-ui 已安装"          test -x "$ROOTMNTP/usr/local/sbin/alpindroid-show-ui"
 chk "waydroid rootfs 目录已建"           test -d "$ROOTMNTP/var/lib/waydroid/rootfs"
 chk "waydroid_base.prop 已生成"          test -f "$ROOTMNTP/var/lib/waydroid/waydroid_base.prop"
+chk "热插拔助手已安装"                   test -x "$ROOTMNTP/usr/local/sbin/alpindroid-hotplug"
+chk "DRM 热插拔 udev 规则"               test -f "$ROOTMNTP/etc/udev/rules.d/98-alpindroid-hotplug.rules"
 chk "cgroup2 已写入 fstab" grep -q cgroup2 "$ROOTMNTP/etc/fstab"
 
 NKOS=$(find "$ROOTMNTP/lib/modules/$KVER" -name '*.ko' | wc -l)

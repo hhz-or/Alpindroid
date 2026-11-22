@@ -1128,3 +1128,53 @@ drops to the desktop user with `su -s /bin/sh` only for the waydroid command.
 
 Also corrected: `waydroid show-full-ui` exits immediately after doing its job, so
 keeping it resident (as an earlier revision did) was pointless.
+
+### 15.18 Hotplug: the touch binding was written once, at boot
+
+`wayland-adapt.sh` reads the connected head from DRM sysfs and writes both
+`/etc/udev/rules.d/99-alpindroid-touch.rules` (`WL_OUTPUT=...`) and
+`weston.ini`'s `[output] name=...`. It only ran from
+`/etc/local.d/alpindroid-runtime.start`, i.e. once at boot, so any HDMI hotplug
+afterwards left the panel bound to a connector that might no longer exist.
+
+Fixed with a second udev rule plus a thin wrapper:
+
+```
+/etc/udev/rules.d/98-alpindroid-hotplug.rules
+  ACTION=="change", SUBSYSTEM=="drm", KERNEL=="card0", RUN+="/usr/local/sbin/alpindroid-hotplug"
+
+/usr/local/sbin/alpindroid-hotplug
+  logs every card*-*/status, then detaches and runs wayland-adapt.sh
+```
+
+The wrapper detaches with `setsid` because udev kills `RUN+` programs on a short
+timeout and expects them to block.
+
+Verified by simulating the event (`udevadm trigger --subsystem-match=drm
+--action=change`):
+
+```
+2026-11-22 19:05:02 hotplug event: card0-HDMI-A-1=connected
+wayland-adapt: connected head = HDMI-A-1
+  wrote /etc/udev/rules.d/99-alpindroid-touch.rules (WL_OUTPUT=HDMI-A-1)
+  updated [output] name in /etc/xdg/weston/weston.ini
+  event3: WL_OUTPUT=HDMI-A-1
+```
+
+**Also found while auditing the running system:**
+
+* `weston.log` shows the touchscreen being associated with
+  `(none by udev)` on a cold boot — this service can start before
+  `alpindroid-runtime.start` has applied the rule, and then the panel has no
+  output and no touch at all. `alpindroid-desktop` now re-applies the udev rule
+  itself (`udevadm control --reload-rules` + `trigger`) before starting weston,
+  so the ordering cannot matter. See 15.17 for the one-shot show-full-ui fix
+  that landed in the same service.
+* cold boot leaves the wall clock at 2026-11-22 08:00 until NTP catches up
+  (`rc-status` even prints `networkmanager started 20778 day(s)`). Everything
+  works, but logs from the first minute carry a wrong timestamp.
+* `dmesg` carries Waydroid-internal noise that is expected in a container:
+  `libprocessgroup: Failed to open /dev/cpuset/foreground/tasks`,
+  `init: failed to set task profiles`, occasional
+  `binder: transaction async ... failed`. No `swiotlb buffer is full` in this
+  boot (count 0).
