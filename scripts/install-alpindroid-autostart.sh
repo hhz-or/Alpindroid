@@ -59,40 +59,77 @@ WESTON
 install_show_ui() {
     cat > "$SHOWUI" <<'SHOWUI_EOF'
 #!/bin/sh
-# Wait for the Waydroid session to be RUNNING and Android to finish booting,
-# then start show-full-ui on the same D-Bus session bus.
+# Bring the Android UI up on top of the compositor and keep it alive.
+#
+# Two things this must never do:
+#   * call lxc-attach while the container is FROZEN - it blocks forever, which
+#     is what previously deadlocked the whole startup;
+#   * assume a single show-full-ui is enough - waydroid refreezes the container
+#     whenever nothing consumes the UI, so we re-check with lxc-info (which only
+#     reads state and never blocks) and unfreeze again.
 UID_NUM="${1:-$(id -u)}"
 export XDG_RUNTIME_DIR="/run/user/$UID_NUM"
 export WAYLAND_DISPLAY=wayland-0
+LXC_POOL=/var/lib/waydroid/lxc
+LXC_NAME=waydroid
 
 log() { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >> /tmp/alpindroid-show-ui.log; }
 
+session_bus() {
+    pid=$(pgrep -f 'waydroid session start' | head -n 1)
+    if [ -z "$pid" ]; then
+        return 1
+    fi
+    tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p'
+}
+
+container_state() { lxc-info -P "$LXC_POOL" -n "$LXC_NAME" -sH 2>/dev/null; }
+
+show_ui() {
+    lxc-unfreeze -P "$LXC_POOL" -n "$LXC_NAME" >/dev/null 2>&1
+    bus=$(session_bus)
+    if [ -n "$bus" ]; then
+        DBUS_SESSION_BUS_ADDRESS="$bus" timeout 30 waydroid show-full-ui >/dev/null 2>&1
+    fi
+}
+
+# 1) wait for the session (waydroid status never blocks)
 i=0
-while [ "$i" -lt 180 ]; do
+while [ "$i" -lt 120 ]; do
     if waydroid status 2>/dev/null | grep -q 'Session:.*RUNNING'; then
-        # waydroid freezes the container while nothing consumes the UI, and
-        # lxc-attach blocks forever against a frozen container — unfreeze first
-        # and always bound the attach with timeout(1).
-        lxc-unfreeze -P /var/lib/waydroid/lxc -n waydroid >/dev/null 2>&1
-        BOOTED=$(timeout 10 lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- /system/bin/getprop sys.boot_completed 2>/dev/null | tr -d '\r')
-        if [ "$BOOTED" = "1" ]; then
-            log "android boot_completed=1; launching show-full-ui"
-            BUS=$(tr '\0' '\n' < "/proc/$(pgrep -f 'waydroid session start' | head -n1)/environ" 2>/dev/null \
-                  | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p')
-            if [ -n "$BUS" ]; then
-                DBUS_SESSION_BUS_ADDRESS="$BUS" waydroid show-full-ui >> /tmp/alpindroid-show-ui.log 2>&1
-                log "show-full-ui exited rc=$?"
-            else
-                log "no session bus address found in the session process"
-            fi
-            exit 0
-        fi
+        break
     fi
     i=$((i + 1))
     sleep 2
 done
-log "gave up waiting for Android (timeout)"
-exit 1
+if ! waydroid status 2>/dev/null | grep -q 'Session:.*RUNNING'; then
+    log "session never reached RUNNING"
+    exit 1
+fi
+log "session RUNNING"
+
+# 2) unfreeze + show-full-ui until the container stays RUNNING
+i=0
+while [ "$i" -lt 40 ]; do
+    show_ui
+    sleep 6
+    state=$(container_state)
+    if [ "$state" = "RUNNING" ]; then
+        log "android UI up (container RUNNING after $i attempt(s))"
+        break
+    fi
+    i=$((i + 1))
+done
+
+# 3) guardian: waydroid freezes the container whenever nobody consumes the UI
+while :; do
+    sleep 15
+    state=$(container_state)
+    if [ "$state" = "FROZEN" ]; then
+        log "container frozen again; unfreezing"
+        show_ui
+    fi
+done
 SHOWUI_EOF
     chmod 0755 "$SHOWUI"
 }

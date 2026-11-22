@@ -941,3 +941,75 @@ exist and `vkgears` fails with "Failed to create Vulkan instance". Alpine ships
 `mesa-demos` was installed on the board (`es2_info`, `es2gears_wayland`,
 `eglgears_wayland`, `vkgears`) purely for diagnosis; it is not part of the image.
 `glmark2` does not exist in Alpine, so it is not an option for benchmarks.
+
+### 15.15 Touch was a symptom: alpindroid-show-ui deadlocked against a frozen container
+
+After the black screen was fixed the picture came up but touch did nothing. The
+input stack itself was fine the whole time:
+
+```
+libinput debug-events:  event0 TOUCH_DOWN / TOUCH_MOTION / TOUCH_FRAME   <- hardware OK
+weston (desktop-shell era): "Unmatched touch up event ... 222A:0001"     <- events arrive
+weston (kiosk, no UI):      "touch event received with 2 points down but no surface focused"
+waydroid side:              wayland_touch  Classes: TOUCH_MT  Enabled: true  mode DIRECT
+```
+
+So events reached the compositor and Android's virtual touch device was enabled,
+but weston had nothing to deliver to. Two scene-graph snapshots explain why:
+
+**Snapshot A — taken while the container was FROZEN**
+
+```
+Layer 4: View 0 (role kiosk-shell-background) solid-colour [R 0 G 0 B 0 A 1]
+Layer 0/1/2/3/5: [no views]
+```
+
+Only the black kiosk background. This is what made me wrongly conclude that
+Waydroid had never created a surface.
+
+**Snapshot B — same command, container RUNNING, active_apps=Waydroid**
+
+```
+Layer 3 (pos 0x50000000):
+	View 0 (role xdg_toplevel, surface ID 20, top-level window 'Waydroid' of Waydroid):
+		SHM buffer  [buffer has been released to client]  width 1, height 1
+	View 1 (role wl_subsurface, surface ID 23, sub-surface):
+		dmabuf buffer  ARM_16X16_BLOCK_U_INTERLEAVED  width 1024, height 600
+```
+
+The Android window is really there: a 1x1 `xdg_toplevel` shell plus a 1024x600
+dmabuf `wl_subsurface` carrying the actual frames.
+
+**Root cause**
+
+`alpindroid-show-ui` read `sys.boot_completed` through `lxc-attach` *before*
+running `show-full-ui`. `lxc-attach` blocks forever against a frozen container
+(measured: SIGTERM after 5 s, rc=143). Waydroid freezes the container precisely
+when nothing consumes the UI — and the thing that would consume it was the
+`show-full-ui` call sitting behind that blocked attach. Deadlock:
+
+```
+container FROZEN -> lxc-attach hangs -> show-full-ui never runs
+                 -> nobody consumes the UI -> container stays FROZEN
+                 -> no wayland view -> weston drops every touch
+```
+
+**Fix**
+
+`alpindroid-show-ui` is rewritten to never call `lxc-attach`:
+
+1. wait for `Session: RUNNING` via `waydroid status` (non-blocking);
+2. loop: `lxc-unfreeze` then `show-full-ui`, checking `lxc-info -sH` between
+   attempts (also non-blocking) until the container stays `RUNNING`;
+3. guardian loop every 15 s: if the container froze again, unfreeze and re-run
+   `show-full-ui`.
+
+Once the view exists, touch works with no further changes — the panel, libinput,
+weston's seat and Android's `wayland_touch` were all fine all along. Confirmed by
+tapping through to `com.android.deskclock` and later
+`mCurrentFocus=com.android.launcher3/QuickstepLauncher`.
+
+**Side finding:** killing weston by hand breaks seatd's session
+(`libseat/backend/seatd.c: Could not poll connection: Broken pipe` /
+`fatal: failed to create compositor backend`), so a restart of the service must
+go through `rc-service alpindroid-desktop restart` rather than `pkill -x weston`.
