@@ -1298,3 +1298,49 @@ Y 0–599 for the 1024×600 panel. During the operator's finger test, a
 read-only evdev capture recorded a contact start, a contact end and 45
 coordinate reports. Android queued motion events and focus moved to
 DeskClock. The operator confirmed both swiping and tapping worked.
+
+### 15.22 Fresh-flash acceptance of v0.22d-touch1
+
+The previous round deployed the image's files onto the board and rebooted; this
+one is a real flash of `Alpindroid-ZeroW-v0.22d-touch1.img` (SHA256
+`295152f4…`), i.e. the whole cold path from an empty card. Result: touch works
+without any manual step.
+
+Evidence from the board after boot:
+
+```
+# this is a genuine first boot, not a redeploy
+up 7 min
+2026-11-22 21:04:32 root device resolved to /dev/mmcblk1p2
+2026-11-22 21:04:32 growing: 12288000 -> 249737216 sectors
+2026-11-22 21:04:34 /etc/.alpindroid-grown
+
+# the rule carries the resolver, not a literal head
+PROGRAM=="/usr/local/sbin/wayland-adapt.sh --output"
+
+# weston started once and bound the panel correctly on that first start
+[08:00:23.426] Touchscreen - OpenWare Multi-Touch-V5000 - .../event3
+[08:00:23.620] associating input device event3 with output HDMI-A-1 (HDMI-A-1 by udev)
+(weston sessions in the log: 1)
+(no "no surface focused" / "Unmatched touch": 0)
+
+# Android came up and the UI request fired exactly once
+21:06:04 show-full-ui issued (one-shot)
+
+# the operator tapped through to the clock app, so touch reached Android
+mCurrentFocus=Window{876802 u0 com.android.deskclock/com.android.deskclock.DeskClock}
+Container: RUNNING
+```
+
+Note which device the panel landed on this time: `event3`, not `event0`. The USB
+enumerate order is not stable across boots, which is exactly why the rule must
+resolve the head per device rather than assume a node name. The earlier
+`(none by udev)` lines for `event1`/`event2`/`event0` in the same block are the
+keyboard, mouse and IR interfaces of the same composite HID device — none of them
+is a touchscreen.
+
+`show-full-ui` also shows its internal retry loop in the log while Android was
+still starting (96 seconds of `Failed to get service waydroidplatform, trying
+again...` before success at 21:06:04). That is Waydroid waiting for its platform
+service, not an error, and it is why the helper treats show-full-ui as one shot
+whose failure is retried rather than fatal.
