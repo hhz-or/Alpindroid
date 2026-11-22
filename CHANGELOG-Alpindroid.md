@@ -1071,3 +1071,60 @@ Verified after the fixes: `Session: RUNNING`, `Container: RUNNING`,
 `waydroid.active_apps=Waydroid`, `mCurrentFocus=...QuickstepLauncher`.
 
 The released image still ships the old helper and needs one more rebuild.
+
+### 15.17 The status bar slid down every few seconds — show-full-ui is not side-effect free
+
+Symptom: with Android on screen, the notification shade dropped down and retracted
+roughly every 10 seconds.
+
+**Cause.** Waydroid's `show-full-ui` is not just a settings call. In 1.6 it does:
+
+```python
+statusBarService.expand()
+time.sleep(0.5)
+statusBarService.collapse()      # HACK: Refresh display contents
+```
+
+so every invocation visibly slides the status bar down and back. The autostart
+helper called it from a retry loop, which turned a one-time refresh into a
+periodic animation.
+
+Measured, after `logcat -c` and a single manual call:
+
+```
+00:12:02.289 D CentralSurfaces: Received new disable state: enaihbcrso.qingr (unchanged)
+00:12:02.572 D CentralSurfaces: Received new disable state: enaihbcrso.qingr (unchanged)
+00:12:02.911 D CentralSurfaces: Received new disable state: enaihbcrso.qingr (unchanged)
+00:12:03.252 D CentralSurfaces: Received new disable state: enaihbcrso.qingr (unchanged)
+```
+
+Four events per call, ~300 ms apart — expand and collapse. Note that
+`mDisabled1`/`mDisabled2` are both `0x0`: the flags never change, the animation is
+the only visible effect. The window config also alternated between
+`mAppBounds=Rect(0,0-1024,600)` and `Rect(0,0-1024,546)` (546 = 600 minus the
+status bar), which is exactly the "shade drops down" the user sees.
+
+**Fix.** `alpindroid-show-ui` now issues `show-full-ui` at most **once per UI
+lifetime**:
+
+| state | action |
+|---|---|
+| `RUNNING`, `ui_done=0` | show-full-ui once, set `ui_done=1` |
+| `RUNNING`, `ui_done=1` | nothing at all |
+| `FROZEN` | `lxc-unfreeze` only; re-allow one rebuild only if it stays frozen |
+| `STOPPED` | reset `ui_done=0` |
+
+**Second fix in the same script:** `lxc-info` and `lxc-unfreeze` require root.
+Run as the desktop user they fail with `Insufficent privileges to control
+waydroid`, and because the calls were followed by `>/dev/null 2>&1` the failure
+was invisible — the unfreezes had never worked. The helper now runs as root and
+drops to the desktop user with `su -s /bin/sh` only for the waydroid command.
+`start-stop-daemon` no longer passes `--user alpine` for it.
+
+**Verified:** `show-full-ui issued (one-shot)` appears exactly once in
+`/tmp/alpindroid-show-ui.log`; 70 seconds with `logcat -c` produced **0**
+`Received new disable state` events (previously 8 per 200 log lines);
+`Container: RUNNING`, `mCurrentFocus=...QuickstepLauncher`.
+
+Also corrected: `waydroid show-full-ui` exits immediately after doing its job, so
+keeping it resident (as an earlier revision did) was pointless.

@@ -59,24 +59,29 @@ WESTON
 install_show_ui() {
     cat > "$SHOWUI" <<'SHOWUI_EOF'
 #!/bin/sh
-# Keep the Android UI alive on top of the compositor.
+# Bring the Android UI up, then leave it alone.
 #
-# Findings that shaped this script (all measured on the board):
+# Why it is written this way (all of it measured on the board):
+#   * `waydroid show-full-ui` is NOT free of side effects. Waydroid 1.6 runs
+#     statusBarService.expand(); sleep(0.5); statusBarService.collapse()
+#     ("HACK: Refresh display contents"), so every call makes the status bar
+#     visibly slide down and back. Running it in a loop makes the screen flicker
+#     every few seconds. It must be called ONCE per UI lifetime;
 #   * `lxc-attach` blocks forever against a FROZEN container, so it is never
-#     used here. `lxc-info` only reads state and never blocks;
-#   * `waydroid show-full-ui` is not a one-shot setting: while it runs, the
-#     container stays RUNNING and wayland keeps a view for the compositor to hit
-#     test against. As soon as it exits, waydroid freezes the container again and
-#     every touch is dropped ("no surface focused"). So it must stay resident;
-#   * `waydroid session start` appears twice in pgrep: the dbus-run-session
+#     used. `lxc-info` only reads state and never blocks;
+#   * `lxc-unfreeze` / `lxc-info` need root, so this helper runs as root and
+#     drops to the desktop user only for the waydroid command itself;
+#   * `waydroid session start` matches twice in pgrep: the dbus-run-session
 #     parent has no DBUS_SESSION_BUS_ADDRESS, only the python child does.
-UID_NUM="${1:-$(id -u)}"
-export XDG_RUNTIME_DIR="/run/user/$UID_NUM"
-export WAYLAND_DISPLAY=wayland-0
+DESKTOP_USER="${DESKTOP_USER:-alpine}"
+UID_NUM=$(id -u "$DESKTOP_USER")
+RUNTIME="/run/user/$UID_NUM"
 LXC_POOL=/var/lib/waydroid/lxc
 LXC_NAME=waydroid
 
 log() { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >> /tmp/alpindroid-show-ui.log; }
+
+container_state() { lxc-info -P "$LXC_POOL" -n "$LXC_NAME" -sH 2>/dev/null; }
 
 session_bus() {
     for pid in $(pgrep -f 'waydroid session start'); do
@@ -89,37 +94,61 @@ session_bus() {
     return 1
 }
 
-container_state() { lxc-info -P "$LXC_POOL" -n "$LXC_NAME" -sH 2>/dev/null; }
+# one and only one show-full-ui per UI lifetime
+show_ui_once() {
+    bus=$(session_bus)
+    if [ -z "$bus" ]; then
+        log "no session bus yet; UI not requested"
+        return 1
+    fi
+    su -s /bin/sh "$DESKTOP_USER" -c \
+        "XDG_RUNTIME_DIR=$RUNTIME WAYLAND_DISPLAY=wayland-0 DBUS_SESSION_BUS_ADDRESS=$bus waydroid show-full-ui" \
+        >/dev/null 2>&1
+    log "show-full-ui issued (one-shot)"
+    return 0
+}
 
-# 1) wait for the session
+# 1) wait for the waydroid session
 i=0
 while [ "$i" -lt 120 ]; do
-    if waydroid status 2>/dev/null | grep -q 'Session:.*RUNNING'; then
+    if su -s /bin/sh "$DESKTOP_USER" -c 'waydroid status' 2>/dev/null | grep -q 'Session:.*RUNNING'; then
         break
     fi
     i=$((i + 1))
     sleep 2
 done
-if ! waydroid status 2>/dev/null | grep -q 'Session:.*RUNNING'; then
-    log "session never reached RUNNING"
-    exit 1
-fi
-log "session RUNNING"
+log "session RUNNING (waited $i tick(s))"
 
-# 2) keep show-full-ui resident. Each (re)start also unfreezes the container so
-#    it can attach; if it dies we simply try again.
+# 2) guardian. show-full-ui is issued at most once per UI lifetime:
+#    a RUNNING container means the UI is already on screen, so do nothing.
+ui_done=0
 while :; do
-    lxc-unfreeze -P "$LXC_POOL" -n "$LXC_NAME" >/dev/null 2>&1
-    bus=$(session_bus)
-    if [ -z "$bus" ]; then
-        log "no session bus yet; retrying"
-        sleep 3
-        continue
-    fi
-    log "starting show-full-ui (state=$(container_state))"
-    DBUS_SESSION_BUS_ADDRESS="$bus" waydroid show-full-ui >> /tmp/alpindroid-show-ui.log 2>&1
-    log "show-full-ui exited rc=$?; restarting in 3s"
-    sleep 3
+    state=$(container_state)
+    case "$state" in
+        RUNNING)
+            if [ "$ui_done" = "0" ]; then
+                if show_ui_once; then
+                    ui_done=1
+                fi
+            fi
+            ;;
+        FROZEN)
+            # unfreeze only; the view normally survives, and re-issuing
+            # show-full-ui here is what caused the status bar flicker.
+            log "container FROZEN; unfreezing"
+            lxc-unfreeze -P "$LXC_POOL" -n "$LXC_NAME" >/dev/null 2>&1
+            sleep 3
+            if [ "$(container_state)" = "FROZEN" ]; then
+                # still frozen: the UI really is gone, allow one rebuild
+                log "still FROZEN after unfreeze; UI will be re-requested once"
+                ui_done=0
+            fi
+            ;;
+        STOPPED|"")
+            ui_done=0
+            ;;
+    esac
+    sleep 10
 done
 SHOWUI_EOF
     chmod 0755 "$SHOWUI"
@@ -184,11 +213,13 @@ start() {
         --exec /usr/bin/dbus-run-session -- \
         -- /bin/sh -c "XDG_RUNTIME_DIR=$RUNTIME WAYLAND_DISPLAY=wayland-0 waydroid session start"
 
-    # 4) wait for Android, then show-full-ui (background helper)
+    # 4) request the UI once and keep the container from staying frozen.
+    #    Runs as root: lxc-info / lxc-unfreeze need it. It drops to the desktop
+    #    user only for `waydroid show-full-ui`, which must be called once
+    #    because it expands and collapses the status bar as a side effect.
     start-stop-daemon --start --background --make-pidfile \
         --pidfile /run/alpindroid-waydroid-ui.pid \
-        --user "${DESKTOP_USER:-alpine}" \
-        --exec /usr/local/sbin/alpindroid-show-ui -- "$UID_NUM"
+        --exec /usr/local/sbin/alpindroid-show-ui
 
     eend 0
 }
