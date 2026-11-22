@@ -59,14 +59,17 @@ WESTON
 install_show_ui() {
     cat > "$SHOWUI" <<'SHOWUI_EOF'
 #!/bin/sh
-# Bring the Android UI up on top of the compositor and keep it alive.
+# Keep the Android UI alive on top of the compositor.
 #
-# Two things this must never do:
-#   * call lxc-attach while the container is FROZEN - it blocks forever, which
-#     is what previously deadlocked the whole startup;
-#   * assume a single show-full-ui is enough - waydroid refreezes the container
-#     whenever nothing consumes the UI, so we re-check with lxc-info (which only
-#     reads state and never blocks) and unfreeze again.
+# Findings that shaped this script (all measured on the board):
+#   * `lxc-attach` blocks forever against a FROZEN container, so it is never
+#     used here. `lxc-info` only reads state and never blocks;
+#   * `waydroid show-full-ui` is not a one-shot setting: while it runs, the
+#     container stays RUNNING and wayland keeps a view for the compositor to hit
+#     test against. As soon as it exits, waydroid freezes the container again and
+#     every touch is dropped ("no surface focused"). So it must stay resident;
+#   * `waydroid session start` appears twice in pgrep: the dbus-run-session
+#     parent has no DBUS_SESSION_BUS_ADDRESS, only the python child does.
 UID_NUM="${1:-$(id -u)}"
 export XDG_RUNTIME_DIR="/run/user/$UID_NUM"
 export WAYLAND_DISPLAY=wayland-0
@@ -76,24 +79,19 @@ LXC_NAME=waydroid
 log() { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >> /tmp/alpindroid-show-ui.log; }
 
 session_bus() {
-    pid=$(pgrep -f 'waydroid session start' | head -n 1)
-    if [ -z "$pid" ]; then
-        return 1
-    fi
-    tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p'
+    for pid in $(pgrep -f 'waydroid session start'); do
+        addr=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p')
+        if [ -n "$addr" ]; then
+            printf '%s\n' "$addr"
+            return 0
+        fi
+    done
+    return 1
 }
 
 container_state() { lxc-info -P "$LXC_POOL" -n "$LXC_NAME" -sH 2>/dev/null; }
 
-show_ui() {
-    lxc-unfreeze -P "$LXC_POOL" -n "$LXC_NAME" >/dev/null 2>&1
-    bus=$(session_bus)
-    if [ -n "$bus" ]; then
-        DBUS_SESSION_BUS_ADDRESS="$bus" timeout 30 waydroid show-full-ui >/dev/null 2>&1
-    fi
-}
-
-# 1) wait for the session (waydroid status never blocks)
+# 1) wait for the session
 i=0
 while [ "$i" -lt 120 ]; do
     if waydroid status 2>/dev/null | grep -q 'Session:.*RUNNING'; then
@@ -108,27 +106,20 @@ if ! waydroid status 2>/dev/null | grep -q 'Session:.*RUNNING'; then
 fi
 log "session RUNNING"
 
-# 2) unfreeze + show-full-ui until the container stays RUNNING
-i=0
-while [ "$i" -lt 40 ]; do
-    show_ui
-    sleep 6
-    state=$(container_state)
-    if [ "$state" = "RUNNING" ]; then
-        log "android UI up (container RUNNING after $i attempt(s))"
-        break
-    fi
-    i=$((i + 1))
-done
-
-# 3) guardian: waydroid freezes the container whenever nobody consumes the UI
+# 2) keep show-full-ui resident. Each (re)start also unfreezes the container so
+#    it can attach; if it dies we simply try again.
 while :; do
-    sleep 15
-    state=$(container_state)
-    if [ "$state" = "FROZEN" ]; then
-        log "container frozen again; unfreezing"
-        show_ui
+    lxc-unfreeze -P "$LXC_POOL" -n "$LXC_NAME" >/dev/null 2>&1
+    bus=$(session_bus)
+    if [ -z "$bus" ]; then
+        log "no session bus yet; retrying"
+        sleep 3
+        continue
     fi
+    log "starting show-full-ui (state=$(container_state))"
+    DBUS_SESSION_BUS_ADDRESS="$bus" waydroid show-full-ui >> /tmp/alpindroid-show-ui.log 2>&1
+    log "show-full-ui exited rc=$?; restarting in 3s"
+    sleep 3
 done
 SHOWUI_EOF
     chmod 0755 "$SHOWUI"

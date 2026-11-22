@@ -1013,3 +1013,61 @@ tapping through to `com.android.deskclock` and later
 (`libseat/backend/seatd.c: Could not poll connection: Broken pipe` /
 `fatal: failed to create compositor backend`), so a restart of the service must
 go through `rc-service alpindroid-desktop restart` rather than `pkill -x weston`.
+
+### 15.16 After a reboot the Android UI did not come up — three more autostart bugs
+
+The board was power-cycled to test the autostart for real. weston, the container
+daemon and the session all came up, but no Android UI appeared and every touch
+was dropped again ("touch event received with N points down but no surface
+focused"). Three separate defects in `alpindroid-show-ui`:
+
+**1. `session_bus()` looked at the wrong PID**
+
+`waydroid session start` matches twice in `pgrep -f`:
+
+```
+13480  dbus-run-session -- sh -c XDG_RUNTIME_DIR=... waydroid session start
+13484  python3 /usr/bin/waydroid session start
+```
+
+The first one *creates* the bus and therefore has no `DBUS_SESSION_BUS_ADDRESS`
+in its own environment; only the python child does. The old code took
+`head -n 1`, got an empty address and silently skipped `show-full-ui`. It now
+scans every matching PID and takes the first one that actually carries the
+variable.
+
+**2. `show-full-ui` was treated as one-shot**
+
+While `waydroid show-full-ui` runs, the container stays `RUNNING` and wayland
+keeps a view the compositor can hit test against. The moment it exits, waydroid
+freezes the container again and touch stops working. The helper therefore keeps
+it resident and restarts it if it ever dies:
+
+```sh
+while :; do
+    lxc-unfreeze ...
+    bus=$(session_bus) || { sleep 3; continue; }
+    DBUS_SESSION_BUS_ADDRESS="$bus" waydroid show-full-ui
+    sleep 3
+done
+```
+
+**3. Stale helpers survived a restart**
+
+`--install-only` overwrites `/usr/local/sbin/alpindroid-show-ui`, but a running
+copy keeps executing the old text, and `rc-service ... stop` only kills what is
+in its pidfile. A manual `pkill -f alpindroid-show-ui` (plus `pkill -f 'waydroid
+show-full-ui'`) is needed before the new code can take effect. The board had two
+show-ui loops and a `timeout 30 waydroid show-full-ui` from the previous version
+running at once.
+
+**Also seen:** after the UI did come up, `mCurrentFocus` was
+`Window{... NotificationShade}` rather than the launcher — the notification shade
+had focus, so the screen looked like nothing had started. `cmd statusbar collapse`
+plus `input keyevent KEYCODE_HOME` put `com.android.launcher3/QuickstepLauncher`
+back in focus and the desktop appeared.
+
+Verified after the fixes: `Session: RUNNING`, `Container: RUNNING`,
+`waydroid.active_apps=Waydroid`, `mCurrentFocus=...QuickstepLauncher`.
+
+The released image still ships the old helper and needs one more rebuild.
