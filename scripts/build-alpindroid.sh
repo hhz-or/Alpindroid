@@ -214,9 +214,35 @@ say "[5c] 安装 Wayland 栈 + 终端美化（chroot + QEMU）"
 # 不再依赖“启动后手工 apk add”。所有分辨率相关的东西都不写死：
 #   * 输出名由 wayland-adapt.sh 从 DRM sysfs 检测，开机时（/etc/local.d）重新生成
     # 热插拔：DRM 连接器变化时重新探测输出并重绑触摸（wayland-adapt.sh 幂等）
-    install -m 0755 "$SCRIPTDIR/alpindroid-hotplug.sh" "$ROOTMNTP/usr/local/sbin/alpindroid-hotplug" 2>/dev/null || true
+    # 注意：[5c] 阶段 /usr/local/sbin 还不存在（由 [5e] 创建），必须先建目录，
+    # 否则 install 静默失败（曾被 2>/dev/null || true 吞掉）。
+    install -d "$ROOTMNTP/usr/local/sbin" "$ROOTMNTP/usr/local/bin"
+    install -m 0755 "$SCRIPTDIR/alpindroid-hotplug.sh" "$ROOTMNTP/usr/local/sbin/alpindroid-hotplug"
     install -m 0644 "$SCRIPTDIR/../config/udev/98-alpindroid-hotplug.rules" \
         "$ROOTMNTP/etc/udev/rules.d/98-alpindroid-hotplug.rules" 2>/dev/null || true
+
+    # [5f] baka 终端彩蛋（cirno/baka-project）：交叉编译静态二进制装进镜像
+    BAKA_DIR="${BAKA_DIR:-$BASE/work/baka}"
+    if [ -f "$BAKA_DIR/baka.c" ] && [ -f "$BAKA_DIR/assets.h" ]; then
+        echo "  → 编译 baka（$(du -sh "$BAKA_DIR/assets.h" | cut -f1) 素材内嵌）"
+        if aarch64-linux-gnu-gcc -Os -std=c99 -Wall -Wextra -static -s \
+               -o /tmp/baka-build "$BAKA_DIR/baka.c" -lm; then
+            install -m 0755 /tmp/baka-build "$ROOTMNTP/usr/local/bin/baka"
+            echo "    $(ls -lh /tmp/baka-build | awk '{print $5}') → /usr/local/bin/baka"
+            # 装一个 shim 让 `baka` 在任何 PATH 位置都能用，并附上说明
+            cat > "$ROOTMNTP/usr/local/share/baka-README.txt" <<'BAKADOC'
+baka 是 Alpindroid 的终端彩蛋，源码在仓库 cirno/baka-project/。
+用法：baka（ᗜˬᗜ）、baka baka（cirno1）……最多 9 个 baka，
+9 档依次为静态字符画 → 黑白/彩色 ASCII → Braille → Unicode 半块动画。
+baka --list  查看全部档位；--once / --speed N / --duration N 控制动画。
+动画需要终端支持 Unicode Braille（U+2800–U+28FF）与块元素（U+2580–U+259F）。
+BAKADOC
+        else
+            echo "  ⚠ baka 编译失败，跳过（不影响镜像其余部分）"
+        fi
+    else
+        echo "  ⚠ 未找到 $BAKA_DIR/baka.c 或 assets.h，跳过 baka"
+    fi
 #   * 模式固定为 preferred（EDID 决定）
 #   * 触摸坐标由 libinput 按 ABS 范围缩放到实际输出，无需校准矩阵
 if [ -x /usr/bin/qemu-aarch64-static ]; then
@@ -358,7 +384,7 @@ TMPL="$ROOTMNTP/usr/lib/waydroid/data/configs"
 if [ ! -f "$ANDROID_DIR/system.img" ] || [ ! -f "$ANDROID_DIR/vendor.img" ]; then
     echo "  WARN 缺少 $ANDROID_DIR/{system,vendor}.img，镜像将不含 Android"
 else
-    install -d "$IMGDIR" "$LXCDIR" "$ROOTMNTP/var/lib/waydroid/host-permissions" \
+    install -d "$IMGDIR" "$LXCDIR" "$ROOTMNTP/usr/local/share" "$ROOTMNTP/var/lib/waydroid/host-permissions" \
                "$ROOTMNTP/var/lib/waydroid/metadata" "$ROOTMNTP/var/lib/waydroid/rootfs"
     echo "  复制 Android 镜像（$(du -sh "$ANDROID_DIR" | cut -f1)）"
     cp -f "$ANDROID_DIR/system.img" "$IMGDIR/system.img"
@@ -554,6 +580,8 @@ chk "waydroid rootfs 目录已建"           test -d "$ROOTMNTP/var/lib/waydroid
 chk "waydroid_base.prop 已生成"          test -f "$ROOTMNTP/var/lib/waydroid/waydroid_base.prop"
 chk "热插拔助手已安装"                   test -x "$ROOTMNTP/usr/local/sbin/alpindroid-hotplug"
 chk "DRM 热插拔 udev 规则"               test -f "$ROOTMNTP/etc/udev/rules.d/98-alpindroid-hotplug.rules"
+chk "baka 彩蛋已安装"                    test -x "$ROOTMNTP/usr/local/bin/baka"
+chk "baka 说明文件"                      test -f "$ROOTMNTP/usr/local/share/baka-README.txt"
 chk "cgroup2 已写入 fstab" grep -q cgroup2 "$ROOTMNTP/etc/fstab"
 
 NKOS=$(find "$ROOTMNTP/lib/modules/$KVER" -name '*.ko' | wc -l)

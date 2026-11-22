@@ -1178,3 +1178,36 @@ wayland-adapt: connected head = HDMI-A-1
   `init: failed to set task profiles`, occasional
   `binder: transaction async ... failed`. No `swiotlb buffer is full` in this
   boot (count 0).
+
+### 15.19 baka easter egg compiled into the image
+
+`cirno/baka-project/` is a single-file C terminal toy (a `baka`-counting Cirno
+animation, 9 tiers from a static `ᗜˬᗜ` up to colour Unicode half-block
+animations). All five pre-baked animations live in a 5.1 MB `assets.h`, so the
+binary is self-contained — no chafa, ffmpeg, Python or font files needed at
+runtime.
+
+The build now cross-compiles it right after the Waylan stack step:
+
+```
+BAKA_DIR="${BAKA_DIR:-$BASE/work/baka}"
+aarch64-linux-gnu-gcc -Os -std=c99 -Wall -Wextra -static -s -o /tmp/baka-build "$BAKA_DIR/baka.c" -lm
+install -m 0755 /tmp/baka-build "$ROOTMNTP/usr/local/bin/baka"
+```
+
+Result: `ELF 64-bit LSB executable, ARM aarch64, statically linked, stripped`,
+1 843 192 bytes. A static glibc binary runs fine under Alpine's musl here because
+`baka` only touches stdio/stdlib/string/time/math — verified on the board:
+`baka --list` printed all nine tiers and `baka` alone printed `ᗜˬᗜ`.
+
+A short usage note lands in `/usr/local/share/baka-README.txt` (fonts stay the
+terminal's job: Braille U+2800–U+28FF and block elements U+2580–U+259F).
+
+**Trap worth remembering:** the install block was first placed in `[5c]`, but
+`/usr/local/sbin` is only created later in `[5e]`. `install -m 0755 src
+$ROOTMNTP/usr/local/sbin/dst` then failed silently because the line ended in
+`2>/dev/null || true`, and the only symptom was the `[6/6]` check
+"热插拔助手已安装" turning red while the udev rule (whose target directory did
+exist in the base image) installed fine. The build now creates
+`/usr/local/sbin` and `/usr/local/bin` first, and that install line no longer
+swallows its errors.
