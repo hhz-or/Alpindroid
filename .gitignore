@@ -18,6 +18,10 @@ backup/
 # ===== Sensitive data =====
 ssh.txt
 
+# ===== baka build artefacts (see cirno/baka-project/README.md) =====
+cirno/baka-project/baka
+cirno/baka-project/*.7z
+
 # ===== Temporary / cache =====
 *.log
 *.tmp

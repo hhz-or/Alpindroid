@@ -212,14 +212,14 @@ fi
 say "[5c] 安装 Wayland 栈 + 终端美化（chroot + QEMU）"
 # 这一段让 v0.19 镜像自带 Weston/seatd/libinput/触摸绑定/字体与彩色终端，
 # 不再依赖“启动后手工 apk add”。所有分辨率相关的东西都不写死：
-#   * 输出名由 wayland-adapt.sh 从 DRM sysfs 检测，开机时（/etc/local.d）重新生成
+#   * 输出名由 wayland-adapt.sh 从 DRM sysfs 检测，在开发板枚举触摸设备时确定
     # 热插拔：DRM 连接器变化时重新探测输出并重绑触摸（wayland-adapt.sh 幂等）
     # 注意：[5c] 阶段 /usr/local/sbin 还不存在（由 [5e] 创建），必须先建目录，
     # 否则 install 静默失败（曾被 2>/dev/null || true 吞掉）。
-    install -d "$ROOTMNTP/usr/local/sbin" "$ROOTMNTP/usr/local/bin"
+    install -d "$ROOTMNTP/usr/local/sbin" "$ROOTMNTP/usr/local/bin" "$ROOTMNTP/etc/udev/rules.d"
     install -m 0755 "$SCRIPTDIR/alpindroid-hotplug.sh" "$ROOTMNTP/usr/local/sbin/alpindroid-hotplug"
     install -m 0644 "$SCRIPTDIR/../config/udev/98-alpindroid-hotplug.rules" \
-        "$ROOTMNTP/etc/udev/rules.d/98-alpindroid-hotplug.rules" 2>/dev/null || true
+        "$ROOTMNTP/etc/udev/rules.d/98-alpindroid-hotplug.rules"
 
     # [5f] baka 终端彩蛋（cirno/baka-project）：交叉编译静态二进制装进镜像
     BAKA_DIR="${BAKA_DIR:-$BASE/work/baka}"
@@ -259,7 +259,7 @@ if [ -x /usr/bin/qemu-aarch64-static ]; then
     cp "$REPO_DIR/config/weston.ini" "$ROOTMNTP/tmp/weston.ini" 2>/dev/null
     cp "$REPO_DIR/config/udev/99-alpindroid-touch.rules" "$ROOTMNTP/tmp/99-alpindroid-touch.rules" 2>/dev/null
     if chroot "$ROOTMNTP" /bin/sh -c \
-        'WESTON_INI_SRC=/tmp/weston.ini UDEV_RULE_SRC=/tmp/99-alpindroid-touch.rules sh /tmp/install-wayland-stack.sh alpine'; then
+        'WESTON_INI_SRC=/tmp/weston.ini UDEV_RULE_SRC=/tmp/99-alpindroid-touch.rules sh /tmp/install-wayland-stack.sh alpine --install-only'; then
         echo "  OK   Wayland 栈安装成功"
     else
         echo "  WARN Wayland 栈安装失败（可在启动后手动执行 install-wayland-stack.sh）"
@@ -486,7 +486,7 @@ if chroot "$ROOTMNTP" /bin/sh -c 'sh /tmp/install-waydroid.sh --no-images'; then
 else
     echo "  WARN 容器修复应用失败"
 fi
-echo "  /var/lib/waydroid 占用: $(du -sh "$ROOTMNTP/var/lib/waydroid" 2>$null | cut -f1)"
+echo "  /var/lib/waydroid 占用: $(du -sh "$ROOTMNTP/var/lib/waydroid" 2>/dev/null | cut -f1)"
 
 rm -f "$ROOTMNTP/tmp/install-waydroid.sh"
 umount "$ROOTMNTP/dev"  2>/dev/null
@@ -546,7 +546,9 @@ chk "libinput 已安装"                    sh -c "ls '$ROOTMNTP/usr/lib/'libinp
 chk "hid-multitouch.ko 存在"             test -n "$(find "$ROOTMNTP/lib/modules/$KVER" -name 'hid?multitouch.ko' -print -quit)"
 chk "weston.ini 已安装"                  test -f "$ROOTMNTP/etc/xdg/weston/weston.ini"
 chk "wayland-adapt.sh 已安装"            test -x "$ROOTMNTP/usr/local/sbin/wayland-adapt.sh"
-chk "开机重生成触摸绑定（local.d）"      test -x "$ROOTMNTP/etc/local.d/alpindroid-runtime.start"
+chk "触摸规则与源码一致（构建机输出未写入镜像）" cmp "$SCRIPTDIR/../config/udev/99-alpindroid-touch.rules" "$ROOTMNTP/etc/udev/rules.d/99-alpindroid-touch.rules"
+chk "Weston 配置与镜像模板一致" cmp "$SCRIPTDIR/../config/weston.ini" "$ROOTMNTP/etc/xdg/weston/weston.ini"
+chk "开机准备桌面用户运行目录（local.d）"      test -x "$ROOTMNTP/etc/local.d/alpindroid-runtime.start"
 chk "彩色终端 profile"                   test -f "$ROOTMNTP/etc/profile.d/alpindroid-color.sh"
 chk "字体已安装"                         sh -c "ls -A '$ROOTMNTP/usr/share/fonts' 2>/dev/null | grep -q ."
 chk "fontconfig 规则（monospace/CJK）"   test -f "$ROOTMNTP/etc/fonts/local.conf"

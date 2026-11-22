@@ -128,8 +128,8 @@ static int number(const char *s, double *out, double minimum, double maximum) {
 }
 
 static void print_list(void) {
-    puts("baka 命令彩蛋（输入的 baka 越多，内容越丰富）：\n"
-         "  baka                                 ᗜˬᗜ（emoji.txt）\n"
+    puts("baka 命令彩蛋（输入的 baka 越多，Baka越丰富）：\n"
+         "  baka                                 ᗜˬᗜ\n"
          "  baka baka                            cirno1 字符画\n"
          "  baka baka baka                       cirno2 字符画\n"
          "  baka baka baka baka                  cirno3 字符画\n"

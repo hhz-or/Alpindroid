@@ -102,23 +102,34 @@ dmesg 2>/dev/null | grep -iE 'multitouch|touchscreen|222A|hid-generic.*222A|usb 
 if [ "$LIVE" -eq 1 ]; then
     sec "8. live capture (${SECS}s) -- TOUCH THE SCREEN NOW"
     node=""
+    direct=""
     for e in /sys/class/input/event*; do
+        [ -e "$e" ] || continue
+        ev="/dev/input/${e##*/}"
+        if command -v udevadm >/dev/null 2>&1 &&
+           udevadm info -q property "$ev" 2>/dev/null | grep -qxF ID_INPUT_TOUCHSCREEN=1; then
+            node="$ev"
+            break
+        fi
         if [ "$(cat "$e/device/properties" 2>/dev/null)" = "2" ]; then
-            node="/dev/input/$(basename "$e")"
+            direct="$ev"
         fi
     done
+    node=${node:-$direct}
     if [ -z "$node" ]; then
-        echo "  no touchscreen node (properties=2) found"
+        echo "  no touchscreen node identified"
+    elif [ ! -r "$node" ]; then
+        echo "  cannot open $node for reading as $(id -un)"
+        exit 1
     else
         echo "  capturing $node for up to ${SECS}s ..."
         out=$(timeout "$SECS" dd if="$node" bs=24 count=6 2>/dev/null | od -An -tx1)
         if [ -z "$out" ]; then
-            echo "  RESULT: no input events at all -- the kernel sees nothing from this device"
+            echo "  RESULT: no data captured from $node during the sampling window"
         else
             echo "  RESULT: events received:"
             printf '%s\n' "$out" | sed 's/^/    /'
         fi
-        [ "$(id -u)" -ne 0 ] && echo "  NOTE: run as root, otherwise the read is refused"
     fi
 fi
 

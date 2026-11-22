@@ -1,12 +1,2 @@
-# Alpindroid: re-detect the connected head when a DRM connector changes.
-#
-# Without this the touch WL_OUTPUT binding is only written once, at boot. Plug a
-# different screen into the HDMI port at runtime and /etc/udev/rules.d/
-# 99-alpindroid-touch.rules keeps pointing the panel at the old connector name,
-# so weston associates the touchscreen with an output that no longer exists and
-# the panel appears dead.
-#
-# wayland-adapt.sh is idempotent, reads the real connector name out of DRM sysfs
-# and rewrites both the udev rule and weston.ini, so running it on every change
-# is safe and cheap.
+# Re-enumerate touchscreens whose output changed on Weston's KMS card.
 ACTION=="change", SUBSYSTEM=="drm", KERNEL=="card0", RUN+="/usr/local/sbin/alpindroid-hotplug"

@@ -14,8 +14,7 @@
 #   sh wayland-check.sh              # static checks only
 #   sh wayland-check.sh --client     # also run weston-simple-egl for 4 s
 #   sh wayland-check.sh --dmabuf     # also run weston-simple-dmabuf-egl
-#   sh wayland-check.sh --touch      # live touch capture (stop weston first:
-#                                    #   pkill -x weston) -- touch the screen
+#   sh wayland-check.sh --touch      # touch the panel while capturing raw events
 #   sh wayland-check.sh --touch=15   # same, 15 s window
 #
 # Exit code: 0 = all checks passed, 1 = at least one failure.
@@ -24,7 +23,15 @@ set -u
 
 WESTON_LOG="${WESTON_LOG:-/tmp/weston.log}"
 DRM_CARD="${DRM_CARD:-card0}"
-OUTPUT_NAME="${OUTPUT_NAME:-HDMI-A-1}"
+if [ -z "${OUTPUT_NAME:-}" ]; then
+    for status in /sys/class/drm/"$DRM_CARD"-*/status; do
+        [ -r "$status" ] && [ "$(cat "$status")" = connected ] || continue
+        connector=${status%/status}
+        OUTPUT_NAME=${connector##*/"$DRM_CARD"-}
+        break
+    done
+fi
+OUTPUT_NAME=${OUTPUT_NAME:-HDMI-A-1}
 RUN_CLIENT=0
 RUN_DMABUF=0
 RUN_TOUCH=0
@@ -70,8 +77,8 @@ fi
 # ---------------------------------------------------------------- 2. compositor
 head2 "2. Weston compositor"
 
-if pgrep -x weston >/dev/null 2>&1; then
-    ok "weston running (pid $(pgrep -x weston | head -n 1))"
+if weston_pids=$(pidof weston); then
+    ok "weston running (pid $weston_pids)"
 else
     bad "weston not running (start it with scripts/start-weston.sh)"
 fi
@@ -130,16 +137,33 @@ else
 fi
 
 touch_found=0
+node=""
 for ev in /dev/input/event*; do
     [ -e "$ev" ] || continue
     info_line=$(udevadm info "$ev" 2>/dev/null)
     case "$info_line" in
         *ID_INPUT_TOUCHSCREEN=1*)
             touch_found=$((touch_found + 1))
-            name=$(udevadm info "$ev" 2>/dev/null | sed -n 's/^E: ID_MODEL=//p' | head -n 1)
+            [ -n "$node" ] || node="$ev"
+            name=$(printf '%s\n' "$info_line" | sed -n 's/^E: ID_MODEL=//p' | head -n 1)
             wl=$(printf '%s\n' "$info_line" | sed -n 's/^E: WL_OUTPUT=//p' | head -n 1)
             ok "touchscreen: $ev ($name)"
-            [ -n "$wl" ] && ok "  bound to output: WL_OUTPUT=$wl" || bad "  WL_OUTPUT not set (udev rule not applied)"
+            [ "$wl" = "$OUTPUT_NAME" ] && ok "  WL_OUTPUT=$wl" || bad "  WL_OUTPUT=${wl:-unset}, expected $OUTPUT_NAME"
+            # weston --log appends across restarts. An older successful
+            # association must not mask a failed boot in the latest session.
+            if [ -r "$WESTON_LOG" ]; then
+                if awk -v dev="${ev##*/}" -v out="$OUTPUT_NAME" '
+                    /Command line:/ { associated = 0 }
+                    index($0, "associating input device " dev " with output ") {
+                        associated = index($0, "with output " out " (" out " by udev)") > 0
+                    }
+                    END { exit !associated }
+                ' "$WESTON_LOG"; then
+                    ok "  Weston associated ${ev##*/} with $OUTPUT_NAME"
+                else
+                    bad "  no matching Weston association for ${ev##*/} in latest session"
+                fi
+            fi
             dev=/sys/class/input/$(basename "$ev")/device
             props=$(cat "$dev/properties" 2>/dev/null)
             [ "$props" = "2" ] && ok "  INPUT_PROP_DIRECT (properties=$props)" || warn "  properties=$props (expected 2 = DIRECT)"
@@ -188,20 +212,10 @@ fi
 
 if [ "$RUN_TOUCH" -eq 1 ]; then
     head2 "7. Touch events (live capture, ${TOUCH_SECS}s)"
-    node=""
-    for e in /sys/class/input/event*; do
-        if [ "$(cat "$e/device/properties" 2>/dev/null)" = "2" ]; then
-            node="/dev/input/$(basename "$e")"
-        fi
-    done
     if [ -z "$node" ]; then
-        bad "no touchscreen node (properties=2) found"
-    elif pgrep -x weston >/dev/null 2>&1; then
-        info "weston is running and owns the device (libinput grab)"
-        info "  -> for a live capture: pkill -x weston, then re-run with --touch"
-        info "  -> for a visual check: run weston-simple-touch on the desktop"
+        bad "no touchscreen node identified by udev"
     elif [ ! -r "$node" ]; then
-        info "$node is not readable by $(id -un); re-run with sudo for the live capture"
+        bad "$node is not readable by $(id -un); re-run with sudo for the live capture"
     else
         printf '  TOUCH THE SCREEN NOW (%ss) ...\n' "$TOUCH_SECS"
         bytes=$(timeout "$TOUCH_SECS" dd if="$node" bs=24 count=2000 2>/dev/null | wc -c)

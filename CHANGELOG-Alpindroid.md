@@ -1257,3 +1257,44 @@ This is the third variant of the same class of bug (ordering between the udev
 rule, the DRM/input enumeration and the compositor start), so the service now
 owns the whole sequence instead of relying on `/etc/local.d` being ordered
 correctly.
+
+### 15.21 Cold-boot touch binding and image verification
+
+Read-only inspection of the ext4 root partitions of **both v0.22c and
+v0.22d** found `ENV{WL_OUTPUT}="eDP-1"` in the shipped rule. The v0.22d
+build log records the adapter selecting that head in the chroot. Stage 5c
+mounts sysfs there, exposing the build laptop's display during installation.
+The earlier assumption in §15.20 that the packaged rule was empty or already
+pointed at HDMI was incorrect.
+
+The board's first Weston session identified the OpenWare panel as a
+touchscreen on `event0`. When it enabled `HDMI-A-1`, it associated only
+`event1`, `event2` and `event3`. Actual touch releases subsequently
+appeared as `Unmatched touch up event` on `event0`. In the later session
+at 19:56:30, Weston explicitly associated `event0` with `HDMI-A-1`.
+The recovered session had an enabled Android `wayland_touch` device and a
+focused activity. The udev database captured after recovery describes that
+later session.
+
+The image now ships one input rule that resolves the board's connector on
+device add or change. The ZeroW falls back to its physical HDMI port while
+EDID is pending. OpenRC waits for queued events and checks each classified
+touchscreen's output before Weston starts. A DRM change re-enumerates a
+panel only when its output has changed. The Weston profile allows the USB
+panel and HDMI head to arrive after launch.
+
+The build compares the packaged rule and Weston configuration with their
+source templates. On the build host, tests in an isolated Alpine ARM64
+rootfs exercised missing input, disconnected HDMI, an alternate connector,
+a stale binding and a settle timeout. The new image's own eudev resolved
+both add and change to `HDMI-A-1` with simulated connector state.
+
+After deploying the image's service, helpers and configuration to the board
+and rebooting, the first Weston process associated `event0` with
+`HDMI-A-1 (HDMI-A-1 by udev)` at 20:27:42. The host acceptance script
+passed 20 checks. Android reached `sys.boot_completed=1`, focused
+QuickstepLauncher and exposed a `wayland_touch` range of X 0–1023 and
+Y 0–599 for the 1024×600 panel. During the operator's finger test, a
+read-only evdev capture recorded a contact start, a contact end and 45
+coordinate reports. Android queued motion events and focus moved to
+DeskClock. The operator confirmed both swiping and tapping worked.

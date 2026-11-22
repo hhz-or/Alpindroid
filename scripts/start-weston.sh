@@ -95,8 +95,8 @@ echo "weston: log=$LOG"
 if [ "$BACKGROUND" -eq 1 ]; then
     setsid weston "$@" </dev/null >/dev/null 2>&1 &
     sleep 3
-    if pgrep -x weston >/dev/null 2>&1; then
-        echo "weston: running (pgrep -a weston)"
+    if kill -0 "$!" 2>/dev/null; then
+        echo "weston: running (pid $!)"
         echo "weston: tail -n 40 $LOG"
     else
         echo "weston: FAILED, see $LOG" >&2

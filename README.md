@@ -97,7 +97,7 @@ v0.20/v0.21 were skipped as separate tags — the container work landed as one r
     ├── replace-modules.sh           Safe kernel-module replacement
     ├── install-gpu-stack.sh         Inject Mesa via chroot + QEMU
     ├── install-wayland-stack.sh     Weston 14 + seatd + libinput + touch wiring
-    ├── wayland-adapt.sh             Detect the connected head, regenerate touch binding
+    ├── wayland-adapt.sh             Resolve the Weston head for touchscreen enumeration
     ├── install-terminal-polish.sh   Colour prompt, LS_COLORS, fonts (+CJK), console font
     ├── install-waydroid.sh          Android container (LXC) + all container-side fixes
     ├── firstboot-grow.sh            First-boot growpart + resize2fs (local.d hook)
@@ -172,7 +172,7 @@ build** — everything comes from the Alpine 3.23 aarch64 repositories.
 | Renderer | GL (`gl-renderer.so`) on `/dev/dri/renderD128` — Mesa 25.2.7, Mali-G31 (Panfrost) |
 | Session | `seatd` + `libseat` (`LIBSEAT_BACKEND=seatd`); no root, no `chmod 777 /dev/dri` |
 | Touch | generic USB HID multi-touch: in-kernel `hid_multitouch`, MT-B slots, `INPUT_PROP_DIRECT`, 10 points → `libinput` |
-| Output binding | `wayland-adapt.sh` detects the connected connector and generates the udev rule (`WL_OUTPUT=<head>`) at boot |
+| Output binding | `wayland-adapt.sh` resolves the board connector for the udev rule (`WL_OUTPUT=<head>`) on touchscreen enumeration |
 
 The touchscreen is **not** driven by a vendor driver. The panel enumerates as a
 standard USB HID device (`222a:0001`, `OpenWare Multi-Touch-V5000`), and the
@@ -191,16 +191,15 @@ sh scripts/start-weston.sh -b
 # acceptance: HDMI output, GL renderer (not llvmpipe), touch binding, dmabuf
 sh scripts/wayland-check.sh --client --dmabuf
 
-# live touch capture (stops nothing by itself: kill weston first, then touch)
-pkill -x weston
-sh scripts/wayland-check.sh --touch=15
+# raw touch capture while Weston is running; touch the panel within 15 seconds
+sudo -E sh scripts/wayland-check.sh --touch=15
 ```
 
 Nothing in this layer is pinned to one panel:
 
 | What could be hard-coded | What is done instead |
 |---|---|
-| Connector name (`HDMI-A-1`) | `wayland-adapt.sh` reads `cardN-<NAME>/status` from DRM sysfs and rewrites both the udev `WL_OUTPUT` rule and `weston.ini`'s `[output] name`; it runs from `/etc/local.d` on boot and can be re-run by hand after swapping screens |
+| Connector name (`HDMI-A-1`) | `wayland-adapt.sh` reads the connected head on Weston's `card0`. The input rule resolves it on the board, with `HDMI-A-1` as the ZeroW fallback while EDID is pending. The desktop service settles udev and checks the binding before launching Weston |
 | Panel resolution | `mode=preferred` — EDID decides, so 1024x600 and 1080p heads both work |
 | Touch coordinate range | the panel reports 0..1920 / 0..1080, libinput scales it onto whatever the output is; no calibration matrix is baked in |
 | Fonts / colours | `install-terminal-polish.sh` sets `monospace -> Source Code Pro`, `sans-serif -> Noto Sans`, CJK fallback to WenQuanYi, plus `LS_COLORS` and a coloured prompt for both ash and bash |

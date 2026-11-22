@@ -9,8 +9,8 @@
 #   seatd, dbus -> weston (kiosk-shell, as the desktop user, via seatd)
 #               -> waydroid container + waydroid0 bridge
 #               -> waydroid session (inside its own dbus-run-session)
-#               -> alpindroid-show-ui: waits for sys.boot_completed=1, then
-#                  runs show-full-ui
+#               -> alpindroid-show-ui: waits for the session and running
+#                  container, then runs show-full-ui
 #
 # weston runs with --shell=kiosk on purpose. Waydroid's hwcomposer creates one
 # full-output wayland surface with no desktop-window semantics; under the default
@@ -103,7 +103,10 @@ show_ui_once() {
     fi
     su -s /bin/sh "$DESKTOP_USER" -c \
         "XDG_RUNTIME_DIR=$RUNTIME WAYLAND_DISPLAY=wayland-0 DBUS_SESSION_BUS_ADDRESS=$bus waydroid show-full-ui" \
-        >/dev/null 2>&1
+        >> /tmp/alpindroid-show-ui.log 2>&1 || {
+        log "show-full-ui failed; will retry"
+        return 1
+    }
     log "show-full-ui issued (one-shot)"
     return 0
 }
@@ -117,7 +120,11 @@ while [ "$i" -lt 120 ]; do
     i=$((i + 1))
     sleep 2
 done
-log "session RUNNING (waited $i tick(s))"
+if [ "$i" -lt 120 ]; then
+    log "session RUNNING (waited $i tick(s))"
+else
+    log "session readiness timed out; continuing to monitor"
+fi
 
 # 2) guardian. show-full-ui is issued at most once per UI lifetime:
 #    a RUNNING container means the UI is already on screen, so do nothing.
@@ -163,7 +170,7 @@ install_service() {
 description="Alpindroid desktop (Weston + Waydroid)"
 
 depend() {
-    need seatd dbus
+    need seatd dbus udev
     after waydroid-container
     want networkmanager
 }
@@ -180,24 +187,15 @@ start() {
     [ -f "$RUNTIME/pulse/native" ] || : > "$RUNTIME/pulse/native"
     chown "$UID_NUM:$UID_NUM" "$RUNTIME/pulse/native"
 
-    # 0) The touch panel needs WL_OUTPUT *before* weston enumerates input, and
-    #    the order below matters — getting it wrong cost two images:
-    #
-    #      * the packaged /etc/udev/rules.d/99-alpindroid-touch.rules has NO
-    #        WL_OUTPUT line, because wayland-adapt.sh deliberately drops it when
-    #        building inside a chroot (no head connected there);
-    #      * so reload+trigger alone push an empty rule and weston still logs
-    #            associating input device event0 ... (none by udev)
-    #        leaving the panel with no output and no touch at all;
-    #      * wayland-adapt.sh has to run FIRST to write the real connector name.
-    #
-    #    Order: adapt -> reload -> trigger -> weston.
-    if [ -x /usr/local/sbin/wayland-adapt.sh ]; then
-        /usr/local/sbin/wayland-adapt.sh >/dev/null 2>&1
+    # Finish enumeration before Weston caches libinput device properties.
+    # Retry once if the USB panel or connector changed during the snapshot.
+    if ! /usr/local/sbin/wayland-adapt.sh; then
+        ewarn "Touch setup failed; retrying before Weston starts"
+        if ! /usr/local/sbin/wayland-adapt.sh; then
+            eend 1 "Could not prepare input devices"
+            return 1
+        fi
     fi
-    udevadm control --reload-rules >/dev/null 2>&1
-    udevadm trigger --subsystem-match=input --action=change >/dev/null 2>&1
-    sleep 1
 
     # 1) Weston on card0, GL on renderD128, as the desktop user through seatd
     start-stop-daemon --start --background --make-pidfile \

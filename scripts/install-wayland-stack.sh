@@ -13,7 +13,7 @@
 #                  INPUT_PROP_DIRECT, handled by libinput. No vendor driver.
 #
 # Usage (on the board, as root):
-#   sh install-wayland-stack.sh [desktop-user]
+#   sh install-wayland-stack.sh [desktop-user] [--install-only]
 #     desktop-user defaults to "alpine"
 #
 # Optional environment:
@@ -28,6 +28,13 @@ DESKTOP_USER="${1:-alpine}"
 WESTON_INI_SRC="${WESTON_INI_SRC:-}"
 UDEV_RULE_SRC="${UDEV_RULE_SRC:-}"
 SCRIPTDIR=$(cd "$(dirname "$0")" && pwd)
+
+INSTALL_ONLY=0
+case "${2:-}" in
+    --install-only) INSTALL_ONLY=1 ;;
+    '') ;;
+    *) echo "unknown option: $2" >&2; exit 2 ;;
+esac
 
 RUNTIME_DIR_INIT=/etc/local.d/alpindroid-runtime.start
 TOUCH_RULE=/etc/udev/rules.d/99-alpindroid-touch.rules
@@ -65,7 +72,9 @@ say "2/6 kernel: hid_multitouch (generic HID multi-touch driver)"
 # autoloads it from the USB modalias the moment the device enumerates — the same
 # way the vendor image does it. Do NOT add it to /etc/modules: that defers the
 # load until after hid-generic has already bound the interface, forcing a rebind.
-if modprobe hid_multitouch 2>/dev/null; then
+if [ "$INSTALL_ONLY" = 1 ]; then
+    echo "  module autoloaded on the target"
+elif modprobe hid_multitouch 2>/dev/null; then
     echo "  hid_multitouch loaded (udev autoloads it on hotplug as well)"
 else
     echo "  WARN hid_multitouch not loadable (kernel module missing?)"
@@ -77,10 +86,12 @@ fi
 # ---------------------------------------------------------------- 3. seatd
 say "3/6 seatd service + seat group"
 rc-update add seatd default >/dev/null 2>&1 || true
-rc-service seatd start >/dev/null 2>&1 || true
+if [ "$INSTALL_ONLY" = 0 ]; then rc-service seatd start; fi
 grep -q '^seat:' /etc/group || addgroup -S seat
 addgroup "$DESKTOP_USER" seat >/dev/null 2>&1 || true
-if rc-service seatd status >/dev/null 2>&1; then
+if [ "$INSTALL_ONLY" = 1 ]; then
+    echo "  seatd enabled for first boot"
+elif rc-service seatd status >/dev/null 2>&1; then
     echo "  seatd: started"
 else
     echo "  WARN seatd is not running"
@@ -98,25 +109,17 @@ if [ -f "$SCRIPTDIR/wayland-adapt.sh" ]; then
     install -m 0755 "$SCRIPTDIR/wayland-adapt.sh" /usr/local/sbin/wayland-adapt.sh
     echo "  installed /usr/local/sbin/wayland-adapt.sh"
 fi
-if [ -x /usr/local/sbin/wayland-adapt.sh ]; then
-    /usr/local/sbin/wayland-adapt.sh || true
-elif [ -n "$UDEV_RULE_SRC" ] && [ -f "$UDEV_RULE_SRC" ]; then
-    install -m 0644 "$UDEV_RULE_SRC" "$TOUCH_RULE"
-    echo "  no adapter available, installed static fallback $UDEV_RULE_SRC"
-else
-    echo "  WARN neither wayland-adapt.sh nor a rule source available"
+[ -x /usr/local/sbin/wayland-adapt.sh ] || die "wayland-adapt.sh is required"
+# The image builder preinstalls the DRM hook. Also install it on live upgrades.
+if [ -f "$SCRIPTDIR/alpindroid-hotplug.sh" ] && [ -f "$SCRIPTDIR/../config/udev/98-alpindroid-hotplug.rules" ]; then
+    install -m 0755 "$SCRIPTDIR/alpindroid-hotplug.sh" /usr/local/sbin/alpindroid-hotplug
+    install -m 0644 "$SCRIPTDIR/../config/udev/98-alpindroid-hotplug.rules" /etc/udev/rules.d/
 fi
-if command -v udevadm >/dev/null 2>&1; then
-    udevadm control --reload >/dev/null 2>&1 || true
-    udevadm trigger --subsystem-match=input >/dev/null 2>&1 || true
-    udevadm settle >/dev/null 2>&1 || true
-    for e in /dev/input/event*; do
-        [ -e "$e" ] || continue
-        if udevadm info "$e" 2>/dev/null | grep -q 'ID_INPUT_TOUCHSCREEN=1'; then
-            wl=$(udevadm info "$e" 2>/dev/null | sed -n 's/^E: WL_OUTPUT=//p' | head -n 1)
-            echo "  $(basename "$e"): WL_OUTPUT=${wl:-unset}"
-        fi
-    done
+UDEV_RULE_SRC=${UDEV_RULE_SRC:-$SCRIPTDIR/../config/udev/99-alpindroid-touch.rules}
+if [ -f "$UDEV_RULE_SRC" ]; then
+    install -m 0644 "$UDEV_RULE_SRC" "$TOUCH_RULE"
+elif ! grep -qF 'wayland-adapt.sh --output' "$TOUCH_RULE" 2>/dev/null; then
+    die "missing touchscreen rule: $UDEV_RULE_SRC"
 fi
 
 # ---------------------------------------------------------------- 5. weston.ini
@@ -134,6 +137,8 @@ backend=drm
 renderer=gl
 shell=desktop
 idle-time=0
+require-input=false
+require-outputs=none
 
 [output]
 name=HDMI-A-1
@@ -156,21 +161,21 @@ chmod 0700 "/run/user/$UID_NUM"
 mkdir -p /etc/local.d
 cat > "$RUNTIME_DIR_INIT" <<EOF
 #!/bin/sh
-# Created by install-wayland-stack.sh: XDG_RUNTIME_DIR for $DESKTOP_USER,
-# plus a re-detection of the connected head (the panel may differ from the one
-# present at install time, so the touch binding must not be hard-coded).
+# Created by install-wayland-stack.sh for manual Weston launches. The desktop service prepares its own runtime.
 mkdir -p /run/user/$UID_NUM
 chown $UID_NUM:$GID_NUM /run/user/$UID_NUM
 chmod 0700 /run/user/$UID_NUM
-if [ -x /usr/local/sbin/wayland-adapt.sh ]; then
-    /usr/local/sbin/wayland-adapt.sh >/tmp/wayland-adapt.log 2>&1 || true
+if [ ! -e /etc/runlevels/default/alpindroid-desktop ]; then
+    exec /usr/local/sbin/wayland-adapt.sh
 fi
-exit 0
 EOF
 chmod 0755 "$RUNTIME_DIR_INIT"
 rc-update add local default >/dev/null 2>&1 || true
 echo "  $RUNTIME_DIR_INIT"
 
+if [ "$INSTALL_ONLY" = 0 ]; then
+    /usr/local/sbin/wayland-adapt.sh
+fi
 say "done"
 cat <<EOF
 Next steps (as $DESKTOP_USER, not root):
