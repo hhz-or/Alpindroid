@@ -1,5 +1,7 @@
 # Alpindroid
 
+[English](README.md) | [简体中文](README.zh.md)
+
 A Linux system for H618 hardware (WalnutPi ZeroW), combining the official Debian 12 boot chain
 with an Alpine Linux 3.23 userspace, targeting Waydroid (Android container) support.
 
